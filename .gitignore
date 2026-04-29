@@ -234,4 +234,10 @@ yarn.lock
 *.bak
 *.backup
 *.old
-*.orig 
+*.orig
+
+/binary/caddy_*
+/binary/node_*
+/binary/*.exe
+
+/release

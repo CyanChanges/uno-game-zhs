@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,31 +9,31 @@
 <body>
     <h1>UNO</h1>
     <div id="lobby">
-        <h2>Join UNO Game</h2>
+        <h2>加入 UNO Game</h2>
         <div>
             <input type="text" id="name" placeholder="Enter your name">
         </div>
         <div>
             <input type="text" id="lobby-id" placeholder="Lobby ID (leave empty for new lobby)">
         </div>
-        <button id="join">Join Game</button>
+        <button id="join">加入 (创建)</button>
         <div id="lobby-info" style="display: none;">
-            <h3>Lobby: <span id="current-lobby-id"></span></h3>
-            <p>Share this lobby ID with friends to join!</p>
+            <h3>大厅: <span id="current-lobby-id"></span></h3>
+            <p>分享大厅 ID 即可加入!</p>
         </div>
         <ul id="players"></ul>
-        <button id="ready">Ready</button>
+        <button id="ready">就绪</button>
     </div>
     <div id="game" style="display: none;">
         <div id="turn-indicator">
-            <h3 id="turn-text">Waiting for game to start...</h3>
+            <h3 id="turn-text">等待游戏开始...</h3>
         </div>
         <div id="opponent-hands"></div>
         <div id="center-area">
-            <button id="draw-card">Draw Card</button>
+            <button id="draw-card">抽牌</button>
             <div id="discard-pile"></div>
             <div id="wild-color-picker" style="display: none;">
-                <h4>Choose a color:</h4>
+                <h4>选择颜色:</h4>
                 <div id="color-options">
                     <div class="color-option" data-color="red" style="background-color: red;"></div>
                     <div class="color-option" data-color="yellow" style="background-color: yellow;"></div>

@@ -1,0 +1,34 @@
+{
+	http_port 0
+	https_port 0
+	auto_https off
+}
+
+:3000 {
+	root * .
+
+	handle_path /ws {
+		reverse_proxy localhost:59980
+	}
+
+	handle_path / {
+		rewrite * /index.html
+		file_server
+	}
+
+	handle /client.js {
+		file_server
+	}
+
+	handle /style.css {
+		file_server
+	}
+
+	handle {
+		error "Not Found" 404
+	}
+
+	encode {
+		zstd fastest
+	}
+}

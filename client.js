@@ -31,8 +31,14 @@ let myLobbyId = null;
 const joinFormContainer = document.createElement('div');
 joinFormContainer.id = 'join-form-container';
 
+function encodeUGC(content) {
+  const tempEl = document.createElement('div');
+  tempEl.textContent = content;
+  return tempEl.innerHTML;
+}
+
 function connect() {
-    ws = new WebSocket('ws://localhost:8080');
+    ws = new WebSocket('/ws');
 
     ws.onopen = () => {
         console.log('Connected to server');
@@ -83,8 +89,8 @@ function connect() {
         }
 
         if (message.action === 'win') {
-            alert(`${message.winner} wins!`);
-            resetGameState();
+            alert(`${message.winner} 获胜！`);
+            requestAnimationFrame(() => resetGameState())
         }
     };
 
@@ -116,20 +122,24 @@ function sendMessage(message) {
 
 function updateTurnIndicator() {
     if (currentTurn === -1 || !players.length) {
-        turnText.textContent = 'Waiting for game to start...';
+        turnText.textContent = '等待游戏开始...';
         turnIndicator.classList.remove('my-turn');
+        playerHandDiv.classList.add('disabled');
         return;
     }
 
     const currentPlayer = players[currentTurn];
     const isMyTurn = currentPlayer && currentPlayer.id === myId;
     
+    // `textContent` is safe
     if (isMyTurn) {
-        turnText.textContent = 'Your turn!';
+        turnText.textContent = 'YOU';
         turnIndicator.classList.add('my-turn');
+        playerHandDiv.classList.remove('disabled');
     } else {
-        turnText.textContent = `${currentPlayer ? currentPlayer.name : 'Unknown'}'s turn`;
+        turnText.textContent = `${currentPlayer ? currentPlayer.name : '-'}的回合`;
         turnIndicator.classList.remove('my-turn');
+        playerHandDiv.classList.add('disabled');
     }
 }
 
@@ -141,14 +151,14 @@ function showLobbyInfo(lobbyId) {
         const creator = players.find(p => p.isCreator);
         const lobbyInfoTitle = document.querySelector('#lobby-info h3');
         if (creator) {
-            lobbyInfoTitle.innerHTML = `Lobby: <span id="current-lobby-id">${lobbyId}</span><br><small style="font-size: 0.8em; opacity: 0.8;">Created by ${creator.name} 👑</small>`;
+            lobbyInfoTitle.innerHTML = `大厅：<span id="current-lobby-id">${encodeUGC(lobbyId)}</span><br><small style="font-size: 0.8em; opacity: 0.8;">由 ${encodeUGC(creator.name)} 创建 👑</small>`;
             // Re-add the click functionality to the new span
             const newLobbyIdSpan = document.getElementById('current-lobby-id');
             newLobbyIdSpan.style.cursor = 'pointer';
             newLobbyIdSpan.title = 'Click to copy lobby ID';
             newLobbyIdSpan.addEventListener('click', copyLobbyId);
         } else {
-            lobbyInfoTitle.innerHTML = `Lobby: <span id="current-lobby-id">${lobbyId}</span>`;
+            lobbyInfoTitle.innerHTML = `大厅：<span id="current-lobby-id">${encodeUGC(lobbyId)}</span>`;
         }
         
         lobbyInfo.style.display = 'block';
@@ -232,8 +242,9 @@ function updatePlayers(players, turn) {
             displayText += ' 👑';
         }
         
+        // `textContent` is safe
         if (player.hand) {
-            playerDiv.textContent = `${displayText} (${player.hand.length} cards)`;
+            playerDiv.textContent = `${displayText}（${player.hand.length} 张牌）`;
         } else {
             playerDiv.textContent = displayText;
         }
@@ -243,7 +254,9 @@ function updatePlayers(players, turn) {
         }
 
         const li = document.createElement('li');
-        let playerText = player.name;
+        // `li` is safe
+        // let playerText = encodeUGC(player.name);
+        let playerText = player.name
         
         // Add creator indicator
         if (player.isCreator) {
@@ -252,7 +265,7 @@ function updatePlayers(players, turn) {
         
         // Add ready status
         if (player.ready) {
-            playerText += ' (Ready)';
+            playerText += '（已准备）';
         }
         
         li.textContent = playerText;
@@ -304,13 +317,13 @@ function updateHand(hand) {
     // Add play selected cards button if multiple cards are selected (below the hand)
     if (selectedCards.length > 1) {
         const playButton = document.createElement('button');
-        playButton.textContent = `Play ${selectedCards.length} cards`;
+        playButton.textContent = `出 ${selectedCards.length} 张牌`;
         playButton.classList.add('play-multiple-btn');
         playButton.addEventListener('click', playSelectedCards);
         playerHandDiv.appendChild(playButton);
         
         const cancelButton = document.createElement('button');
-        cancelButton.textContent = 'Cancel Selection';
+        cancelButton.textContent = '取消选择';
         cancelButton.classList.add('cancel-selection-btn');
         cancelButton.addEventListener('click', clearSelection);
         playerHandDiv.appendChild(cancelButton);
@@ -330,13 +343,13 @@ function handleCardClick(card, cardIndex, hand) {
             i !== cardIndex
         );
         
-        if (sameTypeCards.length > 0) {
-            // Ask user if they want to play multiple cards
-            if (confirm(`You have ${sameTypeCards.length + 1} cards of type "${card.type}". Do you want to select multiple cards to play?`)) {
-                startMultipleSelection(card, cardIndex);
-                return;
-            }
-        }
+        // if (sameTypeCards.length > 0) {
+        //     // Ask user if they want to play multiple cards
+        //     if (confirm(`你有 ${sameTypeCards.length + 1} 张 "${card.type}" 类型的牌是否要选择多张牌出牌？`)) {
+        //         startMultipleSelection(card, cardIndex);
+        //         return;
+        //     }
+        // }
         
         // Single card play
         if (card.type === 'wild' || card.type === 'wild4') {
@@ -364,7 +377,7 @@ function toggleCardSelection(card, cardIndex, hand) {
         if (selectedCards.length === 0 || selectedCards[0].card.type === card.type) {
             selectedCards.push({ card, index: cardIndex });
         } else {
-            alert('You can only select cards of the same type!');
+            alert('只能选择相同类型的牌！');
             return;
         }
     }
@@ -534,17 +547,17 @@ joinButton.addEventListener('click', () => {
     const lobbyId = lobbyIdInput.value.trim().toUpperCase();
     
     if (!name) {
-        alert('Please enter your name');
+        alert('请输入你的名称');
         return;
     }
     
     if (name.length < 2) {
-        alert('Name must be at least 2 characters long');
+        alert('名称至少需要 2 个字符');
         return;
     }
     
     if (name.length > 20) {
-        alert('Name must be 20 characters or less');
+        alert('名称不能超过 20 个字符');
         return;
     }
     
@@ -633,7 +646,7 @@ function fallbackCopyToClipboard(text, element) {
 
 function showCopyFeedback(element) {
     const originalText = element.textContent;
-    element.textContent = 'COPIED!';
+    element.textContent = '已复制！';
     element.style.background = 'rgba(72, 187, 120, 0.3)';
     
     setTimeout(() => {
@@ -645,14 +658,14 @@ function showCopyFeedback(element) {
 function createLeaveLobbyButton() {
     const leaveLobbyBtn = document.createElement('button');
     leaveLobbyBtn.id = 'leave-lobby';
-    leaveLobbyBtn.textContent = 'Leave Lobby';
+    leaveLobbyBtn.textContent = '离开大厅';
     leaveLobbyBtn.classList.add('leave-lobby-btn');
     leaveLobbyBtn.addEventListener('click', leaveLobby);
     return leaveLobbyBtn;
 }
 
 function leaveLobby() {
-    if (confirm('Are you sure you want to leave the lobby?')) {
+    if (confirm('确定要离开大厅吗？')) {
         // Send leave message to server
         sendMessage({ action: 'leave' });
         
@@ -675,6 +688,9 @@ function leaveLobby() {
         
         // Clear name input
         nameInput.value = '';
+
+        // fix: cannot update page
+        requestAnimationFrame(() => location.reload())
     }
 }
 

@@ -1,6 +1,7 @@
-import { WebSocketServer } from 'ws';
+// import { WebSocketServer } from 'ws';
+const { WebSocketServer } = require('ws');
 
-const wss = new WebSocketServer({ port: 8080 });
+const wss = new WebSocketServer({ port: 59980 });
 
 const clients = new Map();
 const lobbies = new Map(); // Map of lobbyId -> lobby object
@@ -42,7 +43,7 @@ function broadcastToLobby(lobbyId, message, excludeClientId = null) {
 function broadcastPlayers(lobbyId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
-    
+
     const message = {
         action: 'players',
         players: lobby.players,
@@ -62,7 +63,7 @@ function checkStartGame(lobbyId) {
 function createDeck(lobbyId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
-    
+
     const colors = ['red', 'yellow', 'green', 'blue'];
     const types = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'skip', 'reverse', 'draw2'];
     const wildTypes = ['wild', 'wild4'];
@@ -86,7 +87,7 @@ function createDeck(lobbyId) {
 function shuffleDeck(lobbyId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
-    
+
     for (let i = lobby.game.deck.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [lobby.game.deck[i], lobby.game.deck[j]] = [lobby.game.deck[j], lobby.game.deck[i]];
@@ -96,7 +97,7 @@ function shuffleDeck(lobbyId) {
 function dealCards(lobbyId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
-    
+
     for (const player of lobby.players) {
         player.hand = lobby.game.deck.splice(0, 7);
         player.uno = false;
@@ -106,7 +107,7 @@ function dealCards(lobbyId) {
 function startGame(lobbyId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
-    
+
     lobby.game.started = true;
     createDeck(lobbyId);
     shuffleDeck(lobbyId);
@@ -141,13 +142,13 @@ function startGame(lobbyId) {
 function broadcastWin(lobbyId, winnerName) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
-    
+
     const message = {
         action: 'win',
         winner: winnerName
     };
     broadcastToLobby(lobbyId, message);
-    
+
     // Reset game state completely
     lobby.players.length = 0; // Clear all players from lobby
     lobby.game.deck = [];
@@ -160,7 +161,7 @@ function broadcastWin(lobbyId, winnerName) {
 function handlePlayMultiple(lobbyId, playerId, cards) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
-    
+
     const player = lobby.players.find(p => p.id === playerId);
     const playerIndex = lobby.players.findIndex(p => p.id === playerId);
 
@@ -186,7 +187,7 @@ function handlePlayMultiple(lobbyId, playerId, cards) {
         } else {
             cardIndex = player.hand.findIndex(c => c.color === card.color && c.type === card.type);
         }
-        
+
         if (cardIndex >= 0) {
             player.hand.splice(cardIndex, 1);
         }
@@ -198,7 +199,7 @@ function handlePlayMultiple(lobbyId, playerId, cards) {
 
     // Handle special card effects (multiply by number of cards played)
     const cardCount = cards.length;
-    
+
     if (lastCard.type === 'skip') {
         // Skip the next player(s)
         lobby.game.turn = (lobby.game.turn + (cardCount + 1) * lobby.game.direction + lobby.players.length) % lobby.players.length;
@@ -235,7 +236,7 @@ function handlePlayMultiple(lobbyId, playerId, cards) {
 function handlePlay(lobbyId, playerId, card) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
-    
+
     const player = lobby.players.find(p => p.id === playerId);
     const playerIndex = lobby.players.findIndex(p => p.id === playerId);
 
@@ -252,7 +253,7 @@ function handlePlay(lobbyId, playerId, card) {
         } else {
             cardIndex = player.hand.findIndex(c => c.color === card.color && c.type === card.type);
         }
-        
+
         if (cardIndex >= 0) {
             player.hand.splice(cardIndex, 1);
         }
@@ -296,7 +297,7 @@ function handlePlay(lobbyId, playerId, card) {
 function handleDraw(lobbyId, playerId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
-    
+
     const playerIndex = lobby.players.findIndex(p => p.id === playerId);
 
     if (lobby.game.turn !== playerIndex) {
@@ -312,7 +313,7 @@ function handleDraw(lobbyId, playerId) {
 function isValidMove(lobbyId, card) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return false;
-    
+
     const topCard = lobby.game.discardPile[lobby.game.discardPile.length - 1];
     return card.color === topCard.color || card.type === topCard.type || card.type === 'wild' || card.type === 'wild4';
 }
@@ -322,7 +323,7 @@ function checkAutoUno(lobbyId, player) {
         player.uno = true;
         return true;
     }
-    
+
     // Check if all remaining cards are the same type (and not wild cards)
     if (player.hand.length > 1) {
         const firstCard = player.hand[0];
@@ -334,7 +335,7 @@ function checkAutoUno(lobbyId, player) {
             }
         }
     }
-    
+
     player.uno = false;
     return false;
 }
@@ -342,7 +343,7 @@ function checkAutoUno(lobbyId, player) {
 function broadcastGameUpdate(lobbyId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
-    
+
     // Check for auto UNO for all players
     lobby.players.forEach(player => {
         if (player.hand) {
@@ -369,7 +370,7 @@ function broadcastGameUpdate(lobbyId) {
 function handleUno(lobbyId, playerId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
-    
+
     const player = lobby.players.find(p => p.id === playerId);
     if (player.hand.length === 1) {
         player.uno = true;
@@ -380,7 +381,7 @@ function handleUno(lobbyId, playerId) {
 
 
 function uuidv4() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
         var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
         return v.toString(16);
     });
@@ -394,31 +395,41 @@ wss.on('connection', (ws) => {
     console.log('Client connected');
 
     ws.on('message', (messageAsString) => {
-        const message = JSON.parse(messageAsString);
+        let message
+        try {
+            message = JSON.parse(messageAsString);
+        } catch (e) {
+            // ws.send(JSON.stringify({
+            //     action: 'error',
+            //     message: '非法请求'
+            // }));
+            ws.close(1002, '非法请求数据')
+            return;
+        }
         const metadata = clients.get(ws);
 
         if (message.action === 'join') {
             metadata.name = message.name;
             metadata.lobbyId = message.lobbyId || generateLobbyId();
             const lobby = findOrCreateLobby(metadata.lobbyId);
-            
+
             // Check if name already exists in this lobby
             const existingPlayer = lobby.players.find(p => p.name.toLowerCase() === message.name.toLowerCase());
             if (existingPlayer) {
                 // Send error message back to client
                 ws.send(JSON.stringify({
                     action: 'error',
-                    message: 'A player with that name already exists in this lobby. Please choose a different name.'
+                    message: '该大厅中已存在同名玩家，请选择其他名称'
                 }));
                 return;
             }
-            
+
             // Check if this is the first player (lobby creator)
             const isCreator = lobby.players.length === 0;
-            
-            lobby.players.push({ 
-                id: metadata.id, 
-                name: metadata.name, 
+
+            lobby.players.push({
+                id: metadata.id,
+                name: metadata.name,
                 ready: false,
                 isCreator: isCreator
             });
@@ -431,7 +442,7 @@ wss.on('connection', (ws) => {
             if (!player) {  // play is not in lobby
                 ws.send(JSON.stringify({
                     action: 'error',
-                    message: 'Ready is only available after joined a lobby'
+                    message: '只有在加入大厅后才能准备'
                 }));
                 return
             }
@@ -455,7 +466,7 @@ wss.on('connection', (ws) => {
         if (message.action === 'play_multiple') {
             handlePlayMultiple(metadata.lobbyId, metadata.id, message.cards);
         }
-        
+
         if (message.action === 'leave') {
             handleLeave(metadata.lobbyId, metadata.id);
         }
@@ -477,12 +488,12 @@ wss.on('connection', (ws) => {
 function handleLeave(lobbyId, playerId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
-    
+
     const playerIndex = lobby.players.findIndex(p => p.id === playerId);
     if (playerIndex > -1) {
         lobby.players.splice(playerIndex, 1);
         broadcastPlayers(lobbyId);
-        
+
         // If lobby is empty, we could optionally remove it
         if (lobby.players.length === 0) {
             lobbies.delete(lobbyId);
@@ -490,4 +501,9 @@ function handleLeave(lobbyId, playerId) {
     }
 }
 
-console.log('Server started on port 8080');
+process.on('SIGINT', () => {
+    console.log('Server closed');
+    process.exit(0); 
+});
+
+console.log('Server started on port 59980');

@@ -3,11 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
+    "start": "concurrently \"node server.js\" \"caddy run\"",
     "dev": "concurrently \"pnpm run start:dev\" \"pnpm run serve\"",
     "start:dev": "nodemon server.js",
     "serve": "vite",
-    "build": "vite build",
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run"

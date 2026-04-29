@@ -64,16 +64,21 @@ A modern, real-time multiplayer UNO card game built with WebSockets, featuring b
 
    ```bash
    pnpm install
+
+   pnpm install -g pkg
    ```
 
-3. **Start the game server**
+3. **Install Caddy**  
+   see <https://caddyserver.com/docs/install>
+
+4. **Start the game server**
 
    ```bash
    pnpm start
    ```
 
-4. **Open your browser**
-   Navigate to `http://localhost:3000` and open `index.html`
+5. **Open your browser**
+   Navigate to `http://localhost:3000`
 
 ### Quick Start
 
@@ -137,8 +142,11 @@ uno/
 ### 🔧 Available Scripts
 
 ```bash
-# Start the WebSocket server
+# Start Websocket server
 pnpm start
+
+# Start the dev server
+pnpm dev
 
 # Run tests once
 pnpm test:run
