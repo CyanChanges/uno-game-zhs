@@ -243,7 +243,7 @@ Players can select and play multiple cards of the same number in a single turn:
 
 ## 📝 License
 
-This project is open source and available under the [MIT License](LICENSE).
+This project is open source and available under the [BSD 3-Clause License](LICENSE).
 
 ## 🤝 Contributing
 
