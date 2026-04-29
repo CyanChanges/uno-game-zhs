@@ -428,6 +428,13 @@ wss.on('connection', (ws) => {
         if (message.action === 'ready') {
             const lobby = findOrCreateLobby(metadata.lobbyId);
             const player = lobby.players.find(p => p.id === metadata.id);
+            if (!player) {  // play is not in lobby
+                ws.send(JSON.stringify({
+                    action: 'error',
+                    message: 'Ready is only available after joined a lobby'
+                }));
+                return
+            }
             player.ready = !player.ready;
             broadcastPlayers(metadata.lobbyId);
             checkStartGame(metadata.lobbyId);
@@ -444,8 +451,6 @@ wss.on('connection', (ws) => {
         if (message.action === 'uno') {
             handleUno(metadata.lobbyId, metadata.id);
         }
-
-
 
         if (message.action === 'play_multiple') {
             handlePlayMultiple(metadata.lobbyId, metadata.id, message.cards);
