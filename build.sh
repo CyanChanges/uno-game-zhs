@@ -12,13 +12,24 @@ case "$PLATFORM_FLAG" in
     PLATFORM="$PLATFORM_FLAG"
     ;;
   *)
-    echo "unknown or unsupported platform: $1"
+    echo "unknown or unsupported platform: $PLATFORM_FLAG"
+    exit 1
+    ;;
+esac
+
+ARCH_FLAG=${2:-x64}
+case "$ARCH_FLAG" in
+  ""|"x64"|"ia32"|"arm64")
+    ARCH="$ARCH_FLAG"
+    ;;
+  *)
+    echo "unknown or unsupported arch: $ARCH_FLAG"
     exit 1
     ;;
 esac
 
 
-FILE_NAME="UNO-${CURRENT_DATE}_${PLATFORM}.zip"
+FILE_NAME="UNO-${CURRENT_DATE}_${PLATFORM}_${ARCH}.zip"
 FULL_PATH="${TARGET_DIR}${FILE_NAME}"
 
 if [ -f "$FULL_PATH" ]; then
@@ -35,12 +46,12 @@ echo "build for $PLATFORM..."
 if [ "$PLATFORM" = "win" ]; then
     # Windows 7 support
     outfile="${DIST_DIR}uno-server.exe"
-    pkg . --targets node12-win-x64 --output "$outfile" --public
+    pkg . --targets "node12-win-${ARCH}" --output "$outfile" --public
 
     # rcedit "$outfile" --set-version-string "LegalCopyright" "Copyright (C) 2026 miruku (lovemilk)"
 else
     outfile="${DIST_DIR}uno-server"
-    pkg . --targets "node12-${PLATFORM}-x64" --output "$outfile" --public
+    pkg . --targets "node12-${PLATFORM}-${ARCH}" --output "$outfile" --public
 fi
 
 mkdir -p "$TARGET_DIR"
