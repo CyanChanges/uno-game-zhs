@@ -237,3 +237,4 @@ yarn.lock
 *.orig
 
 /release
+/continue

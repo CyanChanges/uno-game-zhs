@@ -5,6 +5,12 @@
     box-sizing: border-box;
 }
 
+/* non-selection */
+* {
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}
+
 body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     /* background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); */
@@ -478,9 +484,13 @@ h1 {
     --card-color-dark: #f39c12;
 }
 
-.card[data-color="black"], .card[data-type="wild"], .card[data-type="wild4"] {
+.card[data-color="black"] {
     --card-color-light: #2c3e50;
     --card-color-dark: #1a252f;
+    background: linear-gradient(135deg, #2c3e50 0%, #1a252f 100%);
+}
+
+.card[data-type="wild"], .card[data-type="wild4"] {
     background: linear-gradient(135deg, #2c3e50 0%, #1a252f 100%);
 }
 
@@ -504,6 +514,12 @@ h1 {
 @keyframes wildCardShimmer {
     0%, 100% { background-position: 0% 50%; }
     50% { background-position: 100% 50%; }
+}
+
+/* Played wild cards show the chosen color instead of rainbow shimmer */
+.card[data-type="wild"][data-color]:not([data-color="black"]),
+.card[data-type="wild4"][data-color]:not([data-color="black"]) {
+    background: linear-gradient(135deg, var(--card-color-light) 0%, var(--card-color-dark) 100%);
 }
 
 /* Card content styling */
