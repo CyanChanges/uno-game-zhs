@@ -34,7 +34,7 @@ httpServer.on('upgrade', (request, socket, head) => {
     if (pathname === '/ws') {
         wss.handleUpgrade(request, socket, head, (ws) => {
             wss.emit('connection', ws, request);
-        }); 
+        });
     } else {
         socket.destroy();
     }
@@ -448,67 +448,91 @@ wss.on('connection', (ws) => {
         }
         const metadata = clients.get(ws);
 
-        if (message.action === 'join') {
-            metadata.name = message.name;
-            metadata.lobbyId = message.lobbyId || generateLobbyId();
-            const lobby = findOrCreateLobby(metadata.lobbyId);
+        switch (message.action) {
+            case 'join': {
+                metadata.name = message.name;
+                metadata.lobbyId = message.lobbyId || generateLobbyId();
+                const lobby = findOrCreateLobby(metadata.lobbyId);
 
-            // Check if name already exists in this lobby
-            const existingPlayer = lobby.players.find(p => p.name.toLowerCase() === message.name.toLowerCase());
-            if (existingPlayer) {
-                // Send error message back to client
-                ws.send(JSON.stringify({
-                    action: 'error',
-                    message: '该大厅中已存在同名玩家，请选择其他名称'
-                }));
+                // 检查重名
+                const existingPlayer = lobby.players.find(p => p.name.toLowerCase() === message.name.toLowerCase());
+                if (existingPlayer) {
+                    ws.send(JSON.stringify({
+                        action: 'error',
+                        message: '该大厅中已存在同名玩家，请选择其他名称'
+                    }));
+                    return; // 跳出 switch
+                }
+
+                const isCreator = lobby.players.length === 0;
+                lobby.players.push({
+                    id: metadata.id,
+                    name: metadata.name,
+                    ready: false,
+                    isCreator: isCreator
+                });
+                broadcastPlayers(metadata.lobbyId);
                 return;
             }
 
-            // Check if this is the first player (lobby creator)
-            const isCreator = lobby.players.length === 0;
-
-            lobby.players.push({
-                id: metadata.id,
-                name: metadata.name,
-                ready: false,
-                isCreator: isCreator
-            });
-            broadcastPlayers(metadata.lobbyId);
-        }
-
-        if (message.action === 'ready') {
-            const lobby = findOrCreateLobby(metadata.lobbyId);
-            const player = lobby.players.find(p => p.id === metadata.id);
-            if (!player) {  // play is not in lobby
-                ws.send(JSON.stringify({
-                    action: 'error',
-                    message: '只有在加入大厅后才能准备'
-                }));
-                return
+            case 'ready': {
+                const lobby = findOrCreateLobby(metadata.lobbyId);
+                const player = lobby.players.find(p => p.id === metadata.id);
+                if (!player) {
+                    ws.send(JSON.stringify({
+                        action: 'error',
+                        message: '只有在加入大厅后才能准备'
+                    }));
+                    return;
+                }
+                player.ready = !player.ready;
+                broadcastPlayers(metadata.lobbyId);
+                checkStartGame(metadata.lobbyId);
+                return;
             }
-            player.ready = !player.ready;
-            broadcastPlayers(metadata.lobbyId);
-            checkStartGame(metadata.lobbyId);
+
+            case 'play':
+                handlePlay(metadata.lobbyId, metadata.id, message.card);
+                return;
+
+            case 'draw':
+                handleDraw(metadata.lobbyId, metadata.id);
+                return;
+
+            case 'uno':
+                handleUno(metadata.lobbyId, metadata.id);
+                return;
+
+            case 'play_multiple':
+                handlePlayMultiple(metadata.lobbyId, metadata.id, message.cards);
+                return;
+
+            case 'leave':
+                handleLeave(metadata.lobbyId, metadata.id);
+                return;
+
+            default:
+                if (!isDev()) {
+                    console.warn('unhandled event', message)
+                }
         }
 
-        if (message.action === 'play') {
-            handlePlay(metadata.lobbyId, metadata.id, message.card);
-        }
-
-        if (message.action === 'draw') {
-            handleDraw(metadata.lobbyId, metadata.id);
-        }
-
-        if (message.action === 'uno') {
-            handleUno(metadata.lobbyId, metadata.id);
-        }
-
-        if (message.action === 'play_multiple') {
-            handlePlayMultiple(metadata.lobbyId, metadata.id, message.cards);
-        }
-
-        if (message.action === 'leave') {
-            handleLeave(metadata.lobbyId, metadata.id);
+        // for dev
+        switch (message.action) {
+            case 'call_win':
+                const lobby = findOrCreateLobby(metadata.lobbyId);
+                const player = lobby.players.find(p => p.id === metadata.id);
+                if (!player) {
+                    ws.send(JSON.stringify({
+                        action: 'error',
+                        message: '玩家ID未找到'
+                    }));
+                    return;
+                }
+                broadcastWin(metadata.lobbyId, player.name)
+                return;
+            default:
+                console.warn('unhandled event', message)
         }
     });
 
@@ -558,7 +582,7 @@ process.on('SIGINT', () => {
             process.stdin.setRawMode(true);
             process.stdin.resume();
             process.stdin.on('data', () => process.exit(0));
-        } catch(e) {
+        } catch (e) {
             console.warn('cannot wait for any key')
             console.error(e)
             process.exit(0)
@@ -569,5 +593,7 @@ process.on('SIGINT', () => {
     }
 });
 
+
+httpServer.on('listening', () => console.log('Server started on port 3000'))
+httpServer.on('error', (e) => { console.error(e); process.emit('SIGINT'); })
 httpServer.listen(3000)
-console.log('Server started on port 3000');

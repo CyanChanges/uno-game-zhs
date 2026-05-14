@@ -22,7 +22,8 @@
     "nodemon": "^3.1.10",
     "vite": "^5.0.0",
     "vitest": "^1.0.0",
-    "jsdom": "^23.0.0"
+    "jsdom": "^23.0.0",
+    "pkg": "^5.8.1"
   },
   "main": "server.js",
   "bin": "server.js", 

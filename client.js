@@ -32,9 +32,9 @@ const joinFormContainer = document.createElement('div');
 joinFormContainer.id = 'join-form-container';
 
 function encodeUGC(content) {
-  const tempEl = document.createElement('div');
-  tempEl.textContent = content;
-  return tempEl.innerHTML;
+    const tempEl = document.createElement('div');
+    tempEl.textContent = content;
+    return tempEl.innerHTML;
 }
 
 function connect() {
@@ -48,7 +48,7 @@ function connect() {
 
     ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
-        
+
         if (message.action === 'error') {
             alert(message.message);
             // Re-enable form inputs so user can try again
@@ -57,7 +57,7 @@ function connect() {
             joinButton.disabled = false;
             return;
         }
-        
+
         if (message.action === 'players') {
             players = message.players;
             currentTurn = message.turn;
@@ -132,7 +132,7 @@ function updateTurnIndicator() {
 
     const currentPlayer = players[currentTurn];
     const isMyTurn = currentPlayer && currentPlayer.id === myId;
-    
+
     // `textContent` is safe
     if (isMyTurn) {
         turnText.textContent = 'YOU';
@@ -148,7 +148,7 @@ function updateTurnIndicator() {
 function showLobbyInfo(lobbyId) {
     if (lobbyId) {
         currentLobbyId.textContent = lobbyId;
-        
+
         // Find the creator and update the lobby info
         const creator = players.find(p => p.isCreator);
         const lobbyInfoTitle = document.querySelector('#lobby-info h3');
@@ -162,10 +162,10 @@ function showLobbyInfo(lobbyId) {
         } else {
             lobbyInfoTitle.innerHTML = `大厅：<span id="current-lobby-id">${encodeUGC(lobbyId)}</span>`;
         }
-        
+
         lobbyInfo.style.display = 'block';
         hideJoinForm();
-        
+
         localStorage.setItem('unoLobbyId', lobbyId);
         localStorage.setItem('unoPlayerName', nameInput.value);
     }
@@ -174,7 +174,7 @@ function showLobbyInfo(lobbyId) {
 function attemptRejoin() {
     const savedLobbyId = localStorage.getItem('unoLobbyId');
     const savedPlayerName = localStorage.getItem('unoPlayerName');
-    
+
     if (savedLobbyId && savedPlayerName) {
         lobbyIdInput.value = savedLobbyId;
         nameInput.value = savedPlayerName;
@@ -185,37 +185,40 @@ function resetGameState() {
     // Reset to lobby
     lobbyDiv.style.display = 'block';
     gameDiv.style.display = 'none';
-    
-    // Reset form
-    nameInput.value = '';
-    nameInput.disabled = false;
-    joinButton.disabled = false;
-    lobbyIdInput.disabled = false;
-    
-    // Clear game state
-    myId = null;
-    currentTurn = -1;
-    players = [];
-    pendingWildCard = null;
-    selectedCards = [];
-    isSelectingMultiple = false;
-    myHand = [];
-    myLobbyId = null;
-    
-    // Hide wild color picker and lobby info
-    wildColorPicker.style.display = 'none';
-    hideLobbyInfo();
-    
-    // Clear players list
-    playersList.innerHTML = '';
-    
-    // Reset turn indicator
-    turnText.textContent = 'Waiting for game to start...';
-    turnIndicator.classList.remove('my-turn');
-    
-    // Clear localStorage
-    localStorage.removeItem('unoLobbyId');
-    localStorage.removeItem('unoPlayerName');
+
+    requestAnimationFrame(() => {
+
+        nameInput.value = (localStorage.getItem('unoPlayerName') || '').trim();
+        console.log(nameInput.value)
+        nameInput.disabled = false;
+        joinButton.disabled = false;
+        lobbyIdInput.disabled = false;
+
+        // Clear game state
+        myId = null;
+        currentTurn = -1;
+        players = [];
+        pendingWildCard = null;
+        selectedCards = [];
+        isSelectingMultiple = false;
+        myHand = [];
+        myLobbyId = null;
+
+        // Hide wild color picker and lobby info
+        wildColorPicker.style.display = 'none';
+        hideLobbyInfo();
+
+        // Clear players list
+        playersList.innerHTML = '';
+
+        // Reset turn indicator
+        turnText.textContent = 'Waiting for game to start...';
+        turnIndicator.classList.remove('my-turn');
+
+        // // Clear localStorage
+        // localStorage.removeItem('unoLobbyId');
+        // localStorage.removeItem('unoPlayerName');
+    })
 }
 
 function updatePlayers(players, turn) {
@@ -228,22 +231,22 @@ function updatePlayers(players, turn) {
         if (i === turn) {
             playerDiv.classList.add('active');
         }
-        
+
         // Check for UNO condition (1 card or multiple same-number cards)
         if (player.hand && isUnoCondition(player.hand)) {
             playerDiv.classList.add('uno');
         }
-        
+
         // Add creator styling to opponent display too
         if (player.isCreator) {
             playerDiv.classList.add('creator');
         }
-        
+
         let displayText = player.name;
         if (player.isCreator) {
             displayText += ' 👑';
         }
-        
+
         // `textContent` is safe
         if (player.hand) {
             playerDiv.textContent = `${displayText}（${player.hand.length} 张牌）`;
@@ -259,63 +262,63 @@ function updatePlayers(players, turn) {
         // `li` is safe
         // let playerText = encodeUGC(player.name);
         let playerText = player.name
-        
+
         // Add creator indicator
         if (player.isCreator) {
             playerText += ' 👑';
         }
-        
+
         // Add ready status
         if (player.ready) {
             playerText += '（已准备）';
         }
-        
+
         li.textContent = playerText;
-        
+
         if (i === turn) {
             li.style.fontWeight = 'bold';
         }
-        
+
         // Add special styling for creator
         if (player.isCreator) {
             li.classList.add('creator');
         }
-        
+
         playersList.appendChild(li);
     }
 }
 
 function isUnoCondition(hand) {
     if (hand.length === 1) return true;
-    
+
     // Check if all cards have the same number/type
     if (hand.length > 1) {
         const firstCard = hand[0];
         return hand.every(card => card.type === firstCard.type && card.type !== 'wild' && card.type !== 'wild4');
     }
-    
+
     return false;
 }
 
 function updateHand(hand) {
     playerHandDiv.innerHTML = '';
-    
+
     for (let i = 0; i < hand.length; i++) {
         const card = hand[i];
         const cardDiv = createCard(card);
-        
+
         // Add card index for identification
         cardDiv.dataset.cardIndex = i;
-        
+
         // Check if card is selected
         if (selectedCards.some(selected => selected.index === i)) {
             cardDiv.classList.add('selected');
         }
-        
+
         cardDiv.addEventListener('click', () => handleCardClick(card, i, hand));
         playerHandDiv.appendChild(cardDiv);
     }
-    
+
     // Add play selected cards button if multiple cards are selected (below the hand)
     if (selectedCards.length > 1) {
         const playButton = document.createElement('button');
@@ -323,7 +326,7 @@ function updateHand(hand) {
         playButton.classList.add('play-multiple-btn');
         playButton.addEventListener('click', playSelectedCards);
         playerHandDiv.appendChild(playButton);
-        
+
         const cancelButton = document.createElement('button');
         cancelButton.textContent = '取消选择';
         cancelButton.classList.add('cancel-selection-btn');
@@ -338,13 +341,13 @@ function handleCardClick(card, cardIndex, hand) {
         toggleCardSelection(card, cardIndex, hand);
     } else {
         // Check if this card can be played with others of the same type
-        const sameTypeCards = hand.filter((c, i) => 
-            c.type === card.type && 
-            c.type !== 'wild' && 
-            c.type !== 'wild4' && 
+        const sameTypeCards = hand.filter((c, i) =>
+            c.type === card.type &&
+            c.type !== 'wild' &&
+            c.type !== 'wild4' &&
             i !== cardIndex
         );
-        
+
         // if (sameTypeCards.length > 0) {
         //     // Ask user if they want to play multiple cards
         //     if (confirm(`你有 ${sameTypeCards.length + 1} 张 "${card.type}" 类型的牌是否要选择多张牌出牌？`)) {
@@ -352,7 +355,7 @@ function handleCardClick(card, cardIndex, hand) {
         //         return;
         //     }
         // }
-        
+
         // Single card play
         if (card.type === 'wild' || card.type === 'wild4') {
             showWildColorPicker(card);
@@ -370,7 +373,7 @@ function startMultipleSelection(card, cardIndex) {
 
 function toggleCardSelection(card, cardIndex, hand) {
     const existingIndex = selectedCards.findIndex(selected => selected.index === cardIndex);
-    
+
     if (existingIndex >= 0) {
         // Remove from selection
         selectedCards.splice(existingIndex, 1);
@@ -383,18 +386,18 @@ function toggleCardSelection(card, cardIndex, hand) {
             return;
         }
     }
-    
+
     // If no cards selected, exit multiple selection mode
     if (selectedCards.length === 0) {
         isSelectingMultiple = false;
     }
-    
+
     updateHand(hand);
 }
 
 function playSelectedCards() {
     if (selectedCards.length === 0) return;
-    
+
     const firstCard = selectedCards[0].card;
     if (firstCard.type === 'wild' || firstCard.type === 'wild4') {
         // For wild cards, we need to pick a color first
@@ -402,8 +405,8 @@ function playSelectedCards() {
         wildColorPicker.style.display = 'block';
     } else {
         // Send multiple cards to server
-        sendMessage({ 
-            action: 'play_multiple', 
+        sendMessage({
+            action: 'play_multiple',
             cards: selectedCards.map(s => s.card),
             indices: selectedCards.map(s => s.index)
         });
@@ -441,18 +444,18 @@ function updateDiscardPile(discardPile) {
 function createCard(card) {
     const cardDiv = document.createElement('div');
     cardDiv.classList.add('card');
-    
+
     // Set data attributes for CSS styling
     cardDiv.setAttribute('data-color', card.color || 'black');
     cardDiv.setAttribute('data-type', card.type);
-    
+
     // Create card content structure
     const cardContent = document.createElement('div');
     cardContent.classList.add('card-content');
-    
+
     // Determine card display values
     let cornerNumber, cornerSymbol, centerContent;
-    
+
     if (card.type === 'wild') {
         cornerNumber = 'W';
         cornerSymbol = '★';
@@ -478,47 +481,47 @@ function createCard(card) {
         cornerSymbol = card.type.toUpperCase();
         centerContent = card.type.toUpperCase();
     }
-    
+
     // Create top-left corner
     const topLeftCorner = document.createElement('div');
     topLeftCorner.classList.add('card-corner', 'top-left');
-    
+
     const topLeftNumber = document.createElement('div');
     topLeftNumber.classList.add('card-corner-number');
     topLeftNumber.textContent = cornerNumber;
-    
+
     topLeftCorner.appendChild(topLeftNumber);
-    
+
     // Create bottom-right corner
     const bottomRightCorner = document.createElement('div');
     bottomRightCorner.classList.add('card-corner', 'bottom-right');
-    
+
     const bottomRightNumber = document.createElement('div');
     bottomRightNumber.classList.add('card-corner-number');
     bottomRightNumber.textContent = cornerNumber;
-    
+
     bottomRightCorner.appendChild(bottomRightNumber);
-    
+
     // Create center ellipse
     const cardCenter = document.createElement('div');
     cardCenter.classList.add('card-center');
-    
+
     const cardCenterContent = document.createElement('div');
     cardCenterContent.classList.add('card-center-content');
-    
+
     const centerElement = document.createElement('div');
     centerElement.classList.add('card-center-number');
     centerElement.textContent = centerContent;
-    
+
     cardCenterContent.appendChild(centerElement);
     cardCenter.appendChild(cardCenterContent);
-    
+
     // Assemble the card
     cardContent.appendChild(topLeftCorner);
     cardContent.appendChild(bottomRightCorner);
     cardContent.appendChild(cardCenter);
     cardDiv.appendChild(cardContent);
-    
+
     return cardDiv;
 }
 
@@ -529,8 +532,8 @@ colorOptions.addEventListener('click', (e) => {
         if (pendingWildCard) {
             if (Array.isArray(pendingWildCard)) {
                 // Multiple wild cards
-                sendMessage({ 
-                    action: 'play_multiple', 
+                sendMessage({
+                    action: 'play_multiple',
                     cards: pendingWildCard.map(card => ({ ...card, color: color })),
                     indices: selectedCards.map(s => s.index)
                 });
@@ -547,27 +550,27 @@ colorOptions.addEventListener('click', (e) => {
 joinButton.addEventListener('click', () => {
     const name = nameInput.value.trim();
     const lobbyId = lobbyIdInput.value.trim().toUpperCase();
-    
+
     if (!name) {
         alert('请输入你的名称');
         return;
     }
-    
+
     if (name.length < 2) {
         alert('名称至少需要 2 个字符');
         return;
     }
-    
+
     if (name.length > 20) {
         alert('名称不能超过 20 个字符');
         return;
     }
-    
+
     // Disable form to prevent multiple submissions
     nameInput.disabled = true;
     lobbyIdInput.disabled = true;
     joinButton.disabled = true;
-    
+
     const message = { action: 'join', name: name };
     if (lobbyId) {
         message.lobbyId = lobbyId;
@@ -586,19 +589,19 @@ drawCardButton.addEventListener('click', () => {
 document.addEventListener('DOMContentLoaded', () => {
     connect();
     attemptRejoin();
-    
+
     // Create form container and move elements
     const nameDiv = nameInput.parentNode;
     const lobbyDiv = lobbyIdInput.parentNode;
-    
+
     joinFormContainer.appendChild(nameDiv);
     joinFormContainer.appendChild(lobbyDiv);
     joinFormContainer.appendChild(joinButton);
-    
+
     // Insert before players list
     const playersUl = document.getElementById('players');
     playersUl.parentNode.insertBefore(joinFormContainer, playersUl);
-    
+
     // Add click-to-copy functionality to lobby ID
     const lobbyIdSpan = document.getElementById('current-lobby-id');
     if (lobbyIdSpan) {
@@ -611,7 +614,7 @@ document.addEventListener('DOMContentLoaded', () => {
 function copyLobbyId() {
     const lobbyIdSpan = document.getElementById('current-lobby-id');
     const lobbyId = lobbyIdSpan.textContent;
-    
+
     // Use the modern clipboard API
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(lobbyId).then(() => {
@@ -635,14 +638,14 @@ function fallbackCopyToClipboard(text, element) {
     document.body.appendChild(textArea);
     textArea.focus();
     textArea.select();
-    
+
     try {
         document.execCommand('copy');
         showCopyFeedback(element);
     } catch (err) {
         console.error('Failed to copy lobby ID:', err);
     }
-    
+
     document.body.removeChild(textArea);
 }
 
@@ -650,7 +653,7 @@ function showCopyFeedback(element) {
     const originalText = element.textContent;
     element.textContent = '已复制！';
     element.style.background = 'rgba(72, 187, 120, 0.3)';
-    
+
     setTimeout(() => {
         element.textContent = originalText;
         element.style.background = 'rgba(255,255,255,0.2)';
@@ -670,35 +673,35 @@ function leaveLobby() {
     if (confirm('确定要离开大厅吗？')) {
         // Send leave message to server
         sendMessage({ action: 'leave' });
-        
-        // Reset to join form state
-        showJoinForm();
-        hideLobbyInfo();
-        
-        // Clear lobby data
-        myLobbyId = null;
-        localStorage.removeItem('unoLobbyId');
-        localStorage.removeItem('unoPlayerName');
-        
-        // Clear players list
-        playersList.innerHTML = '';
-        
-        // Re-enable form inputs
-        nameInput.disabled = false;
-        lobbyIdInput.disabled = false;
-        joinButton.disabled = false;
-        
-        // Clear name input
-        nameInput.value = '';
+        // location.reload()
 
-        // fix: cannot update page
-        requestAnimationFrame(() => location.reload())
+        requestAnimationFrame(() => resetGameState())
+
+        // // Reset to join form state
+        // showJoinForm();
+        // hideLobbyInfo();
+
+        // // Clear lobby data
+        // myLobbyId = null;
+        // // localStorage.removeItem('unoLobbyId');
+        // // localStorage.removeItem('unoPlayerName');
+
+        // // Clear players list
+        // playersList.innerHTML = '';
+
+        // // Re-enable form inputs
+        // nameInput.disabled = false;
+        // lobbyIdInput.disabled = false;
+        // joinButton.disabled = false;
+
+        // // Clear name input
+        // nameInput.value = (localStorage.getItem('unoPlayerName') || '').trim();
     }
 }
 
 function showJoinForm() {
     joinFormContainer.style.display = 'block';
-    
+
     // Remove leave lobby button if it exists
     const existingLeaveBtn = document.getElementById('leave-lobby');
     if (existingLeaveBtn) {
@@ -708,7 +711,7 @@ function showJoinForm() {
 
 function hideJoinForm() {
     joinFormContainer.style.display = 'none';
-    
+
     // Add leave lobby button if it doesn't exist
     let leaveLobbyBtn = document.getElementById('leave-lobby');
     if (!leaveLobbyBtn) {
@@ -722,4 +725,8 @@ function hideJoinForm() {
 function hideLobbyInfo() {
     lobbyInfo.style.display = 'none';
     showJoinForm();
+}
+
+function __callWin__() {
+    sendMessage({ action: 'call_win' });
 }

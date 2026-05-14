@@ -64,8 +64,6 @@ A modern, real-time multiplayer UNO card game built with WebSockets, featuring b
 
    ```bash
    pnpm install
-
-   pnpm install -g pkg
    ```
 
 <!-- 3. **Install Rcedit**  
