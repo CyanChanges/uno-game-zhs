@@ -49,6 +49,11 @@ function connect() {
     ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
 
+        if (message.action === 'init') {
+            if (message.dev) setupDevPanel();
+            return;
+        }
+
         if (message.action === 'error') {
             alert(message.message);
             // Re-enable form inputs so user can try again
@@ -91,8 +96,11 @@ function connect() {
         }
 
         if (message.action === 'win') {
-            alert(`${message.winner} 获胜！`);
-            requestAnimationFrame(() => resetGameState())
+            showGameOver(message.winner);
+        }
+
+        if (message.action === 'game_aborted') {
+            showGameAborted();
         }
     };
 
@@ -148,6 +156,7 @@ function updateTurnIndicator() {
 function showLobbyInfo(lobbyId) {
     if (lobbyId) {
         currentLobbyId.textContent = lobbyId;
+        readyButton.style.display = 'block';
 
         // Find the creator and update the lobby info
         const creator = players.find(p => p.isCreator);
@@ -207,6 +216,7 @@ function resetGameState() {
         // Hide wild color picker and lobby info
         wildColorPicker.style.display = 'none';
         hideLobbyInfo();
+        readyButton.style.display = 'none';
 
         // Clear players list
         playersList.innerHTML = '';
@@ -727,6 +737,119 @@ function hideLobbyInfo() {
     showJoinForm();
 }
 
-function __callWin__() {
-    sendMessage({ action: 'call_win' });
+const gameOverOverlay = document.getElementById('game-over-overlay');
+const gameOverTitle = document.getElementById('game-over-title');
+const gameOverMessage = document.getElementById('game-over-message');
+const gameOverIcon = document.getElementById('game-over-icon');
+const gameOverContent = document.getElementById('game-over-content');
+const gameOverBtn = document.getElementById('game-over-btn');
+
+let isGameOverShowing = false;
+
+function showGameOver(winnerName) {
+    if (isGameOverShowing) return;
+    isGameOverShowing = true;
+
+    const isWinner = winnerName === players.find(p => p.id === myId)?.name;
+    const myName = localStorage.getItem('unoPlayerName') || '';
+
+    if (isWinner) {
+        gameOverIcon.textContent = '🏆';
+        gameOverTitle.textContent = '你赢了！';
+        gameOverMessage.textContent = `🎉 ${encodeUGC(winnerName)} 赢得了游戏！干得漂亮！`;
+        gameOverContent.className = 'win';
+        spawnConfetti();
+    } else {
+        gameOverIcon.textContent = '💔';
+        gameOverTitle.textContent = '游戏结束';
+        gameOverMessage.textContent = `${encodeUGC(winnerName)} 赢得了游戏！\n下次加油，${encodeUGC(myName)}！`;
+        gameOverContent.className = 'lose';
+    }
+
+    gameOverOverlay.classList.remove('hidden');
+    gameOverOverlay.style.display = 'flex';
 }
+
+function showGameAborted() {
+    if (isGameOverShowing) return;
+    isGameOverShowing = true;
+
+    gameOverIcon.textContent = '⚡';
+    gameOverTitle.textContent = '对局中止';
+    gameOverMessage.textContent = '其他玩家离开了对局，游戏已结束';
+    gameOverContent.className = 'aborted';
+
+    gameOverOverlay.classList.remove('hidden');
+    gameOverOverlay.style.display = 'flex';
+}
+
+gameOverBtn.addEventListener('click', () => {
+    gameOverOverlay.classList.add('hidden');
+    gameOverOverlay.style.display = '';
+    isGameOverShowing = false;
+    requestAnimationFrame(() => resetGameState());
+});
+
+function spawnConfetti() {
+    const colors = ['#ff6b6b', '#ffd700', '#48bb78', '#667eea', '#ff8a5c', '#f1c40f', '#e74c3c', '#3498db', '#2ecc71'];
+    const container = document.body;
+
+    for (let i = 0; i < 80; i++) {
+        const el = document.createElement('div');
+        el.classList.add('confetti');
+        el.style.left = Math.random() * 100 + 'vw';
+        el.style.background = colors[Math.floor(Math.random() * colors.length)];
+        el.style.width = (Math.random() * 8 + 4) + 'px';
+        el.style.height = (Math.random() * 8 + 4) + 'px';
+        el.style.borderRadius = Math.random() > 0.5 ? '50%' : '2px';
+        el.style.animationDuration = (Math.random() * 2 + 2) + 's';
+        el.style.animationDelay = (Math.random() * 2) + 's';
+        container.appendChild(el);
+
+        setTimeout(() => el.remove(), 5000);
+    }
+}
+
+function __callWin__() {
+    sendMessage({ action: 'dev_call_win' });
+}
+
+// Dev Panel — press Ctrl+Shift+D to toggle; auto-shown when server is in dev mode
+function setupDevPanel() {
+    const panel = document.getElementById('dev-panel');
+    if (!panel) return;
+
+    panel.style.display = '';
+
+    document.addEventListener('keydown', (e) => {
+        if (e.ctrlKey && e.shiftKey && e.code === 'KeyD') {
+            e.preventDefault();
+            panel.style.display = panel.style.display === 'none' ? '' : 'none';
+        }
+    });
+
+    // Toggle collapse on header click
+    const header = document.getElementById('dev-panel-header');
+    header.addEventListener('click', () => {
+        panel.classList.toggle('collapsed');
+    });
+
+    // Dev button click handlers
+    panel.addEventListener('click', (e) => {
+        const btn = e.target.closest('.dev-btn');
+        if (!btn) return;
+
+        const action = btn.dataset.action;
+        const count = btn.dataset.count ? parseInt(btn.dataset.count) : undefined;
+
+        const msg = { action };
+        if (count !== undefined) msg.count = count;
+        sendMessage(msg);
+    });
+}
+
+(function initDevPanel() {
+    // Prepare panel hidden; setupDevPanel will be called when 'init' message confirms dev mode
+    const panel = document.getElementById('dev-panel');
+    if (panel) panel.style.display = 'none';
+})();

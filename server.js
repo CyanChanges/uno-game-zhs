@@ -189,6 +189,14 @@ function broadcastWin(lobbyId, winnerName) {
     };
     broadcastToLobby(lobbyId, message);
 
+    // Clear lobbyId from all clients so stale metadata doesn't cause cross-tab interference
+    [...clients.keys()].forEach((client) => {
+        const metadata = clients.get(client);
+        if (metadata.lobbyId === lobbyId) {
+            metadata.lobbyId = null;
+        }
+    });
+
     // Reset game state completely
     lobby.players.length = 0; // Clear all players from lobby
     lobby.game.deck = [];
@@ -196,6 +204,36 @@ function broadcastWin(lobbyId, winnerName) {
     lobby.game.turn = 0;
     lobby.game.direction = 1;
     lobby.game.started = false;
+}
+
+function broadcastGameAborted(lobbyId, excludePlayerId) {
+    const lobby = lobbies.get(lobbyId);
+    if (!lobby) return;
+
+    const message = {
+        action: 'game_aborted'
+    };
+    broadcastToLobby(lobbyId, message, excludePlayerId);
+
+    // Reset game state but keep players for lobby
+    lobby.game.deck = [];
+    lobby.game.discardPile = [];
+    lobby.game.turn = 0;
+    lobby.game.direction = 1;
+    lobby.game.started = false;
+    lobby.players.forEach(p => {
+        p.ready = false;
+        p.hand = undefined;
+        p.uno = false;
+    });
+}
+
+function checkGameAborted(lobbyId, excludePlayerId) {
+    const lobby = lobbies.get(lobbyId);
+    if (!lobby || !lobby.game.started) return;
+    if (lobby.players.length < 2) {
+        broadcastGameAborted(lobbyId, excludePlayerId);
+    }
 }
 
 function handlePlayMultiple(lobbyId, playerId, cards) {
@@ -432,7 +470,8 @@ wss.on('connection', (ws) => {
     const metadata = { id };
     clients.set(ws, metadata);
 
-    console.log('Client connected');
+    ws.send(JSON.stringify({ action: 'init', dev: isDev() }))
+    console.log('client connected', id)
 
     ws.on('message', (messageAsString) => {
         let message
@@ -448,104 +487,155 @@ wss.on('connection', (ws) => {
         }
         const metadata = clients.get(ws);
 
-        switch (message.action) {
-            case 'join': {
-                metadata.name = message.name;
-                metadata.lobbyId = message.lobbyId || generateLobbyId();
-                const lobby = findOrCreateLobby(metadata.lobbyId);
+        if (!(message.action || '').startsWith('dev_')) {
+            switch (message.action) {
+                case 'join': {
+                    metadata.name = message.name;
+                    metadata.lobbyId = message.lobbyId || generateLobbyId();
+                    const lobby = findOrCreateLobby(metadata.lobbyId);
 
-                // 检查重名
-                const existingPlayer = lobby.players.find(p => p.name.toLowerCase() === message.name.toLowerCase());
-                if (existingPlayer) {
-                    ws.send(JSON.stringify({
-                        action: 'error',
-                        message: '该大厅中已存在同名玩家，请选择其他名称'
-                    }));
-                    return; // 跳出 switch
-                }
+                    // 检查重名
+                    const existingPlayer = lobby.players.find(p => p.name.toLowerCase() === message.name.toLowerCase());
+                    if (existingPlayer) {
+                        ws.send(JSON.stringify({
+                            action: 'error',
+                            message: '该大厅中已存在同名玩家，请选择其他名称'
+                        }));
+                        return; // 跳出 switch
+                    }
 
-                const isCreator = lobby.players.length === 0;
-                lobby.players.push({
-                    id: metadata.id,
-                    name: metadata.name,
-                    ready: false,
-                    isCreator: isCreator
-                });
-                broadcastPlayers(metadata.lobbyId);
-                return;
-            }
-
-            case 'ready': {
-                const lobby = findOrCreateLobby(metadata.lobbyId);
-                const player = lobby.players.find(p => p.id === metadata.id);
-                if (!player) {
-                    ws.send(JSON.stringify({
-                        action: 'error',
-                        message: '只有在加入大厅后才能准备'
-                    }));
+                    const isCreator = lobby.players.length === 0;
+                    const player = {
+                        id: metadata.id,
+                        name: metadata.name,
+                        ready: false,
+                        isCreator: isCreator
+                    }
+                    lobby.players.push(player);
+                    broadcastPlayers(metadata.lobbyId);
+                    console.log('player jointed to', lobby.id, ':', player)
                     return;
                 }
-                player.ready = !player.ready;
-                broadcastPlayers(metadata.lobbyId);
-                checkStartGame(metadata.lobbyId);
-                return;
-            }
 
-            case 'play':
-                handlePlay(metadata.lobbyId, metadata.id, message.card);
-                return;
+                case 'ready': {
+                    const lobby = findOrCreateLobby(metadata.lobbyId);
+                    const player = lobby.players.find(p => p.id === metadata.id);
+                    if (!player) {
+                        ws.send(JSON.stringify({
+                            action: 'error',
+                            message: '只有在加入大厅后才能准备'
+                        }));
+                        return;
+                    }
+                    player.ready = !player.ready;
+                    broadcastPlayers(metadata.lobbyId);
+                    checkStartGame(metadata.lobbyId);
+                    return;
+                }
 
-            case 'draw':
-                handleDraw(metadata.lobbyId, metadata.id);
-                return;
+                case 'play':
+                    handlePlay(metadata.lobbyId, metadata.id, message.card);
+                    return;
 
-            case 'uno':
-                handleUno(metadata.lobbyId, metadata.id);
-                return;
+                case 'draw':
+                    handleDraw(metadata.lobbyId, metadata.id);
+                    return;
 
-            case 'play_multiple':
-                handlePlayMultiple(metadata.lobbyId, metadata.id, message.cards);
-                return;
+                case 'uno':
+                    handleUno(metadata.lobbyId, metadata.id);
+                    return;
 
-            case 'leave':
-                handleLeave(metadata.lobbyId, metadata.id);
-                return;
+                case 'play_multiple':
+                    handlePlayMultiple(metadata.lobbyId, metadata.id, message.cards);
+                    return;
 
-            default:
-                if (!isDev()) {
+                case 'leave':
+                    handleLeave(metadata.lobbyId, metadata.id);
+                    return;
+
+                default:
                     console.warn('unhandled event', message)
-                }
-        }
+                    return
+            }
+        } else {
+            if (!isDev()) {
+                console.warn('cannot handle dev event for production environment', message)
+                return
+            }
 
-        // for dev
-        switch (message.action) {
-            case 'call_win':
-                const lobby = findOrCreateLobby(metadata.lobbyId);
-                const player = lobby.players.find(p => p.id === metadata.id);
-                if (!player) {
-                    ws.send(JSON.stringify({
-                        action: 'error',
-                        message: '玩家ID未找到'
-                    }));
+            // for dev
+            switch (message.action) {
+                case 'dev_call_win':
+                    const lobby1 = findOrCreateLobby(metadata.lobbyId);
+                    const player1 = lobby1.players.find(p => p.id === metadata.id);
+                    if (!player1) {
+                        ws.send(JSON.stringify({
+                            action: 'error',
+                            message: '玩家ID未找到'
+                        }));
+                        return;
+                    }
+                    broadcastWin(metadata.lobbyId, player1.name)
+                    return;
+                case 'dev_add_cards': {
+                    const lobby2 = findOrCreateLobby(metadata.lobbyId);
+                    if (!lobby2.game.started) { ws.send(JSON.stringify({ action: 'error', message: '对局未开始' })); return; }
+                    const player2 = lobby2.players.find(p => p.id === metadata.id);
+                    if (!player2) { ws.send(JSON.stringify({ action: 'error', message: '玩家ID未找到' })); return; }
+                    const count = Math.min(message.count || 1, 20);
+                    const drawn = lobby2.game.deck.splice(0, count);
+                    player2.hand.push(...drawn);
+                    broadcastGameUpdate(metadata.lobbyId);
                     return;
                 }
-                broadcastWin(metadata.lobbyId, player.name)
-                return;
-            default:
-                console.warn('unhandled event', message)
+                case 'dev_remove_cards': {
+                    const lobby3 = findOrCreateLobby(metadata.lobbyId);
+                    if (!lobby3.game.started) { ws.send(JSON.stringify({ action: 'error', message: '对局未开始' })); return; }
+                    const player3 = lobby3.players.find(p => p.id === metadata.id);
+                    if (!player3) { ws.send(JSON.stringify({ action: 'error', message: '玩家ID未找到' })); return; }
+                    const removeCount = Math.min(message.count || 1, player3.hand.length);
+                    player3.hand.splice(0, removeCount);
+                    if (player3.hand.length === 0) {
+                        broadcastWin(metadata.lobbyId, player3.name);
+                    } else {
+                        broadcastGameUpdate(metadata.lobbyId);
+                    }
+                    return;
+                }
+                case 'dev_skip': {
+                    const lobby4 = findOrCreateLobby(metadata.lobbyId);
+                    if (!lobby4.game.started) { ws.send(JSON.stringify({ action: 'error', message: '对局未开始' })); return; }
+                    lobby4.game.turn = (lobby4.game.turn + lobby4.game.direction + lobby4.players.length) % lobby4.players.length;
+                    broadcastGameUpdate(metadata.lobbyId);
+                    return;
+                }
+                default:
+                    console.warn('unhandled dev event', message)
+            }
         }
     });
 
     ws.on('close', () => {
         const metadata = clients.get(ws);
-        const lobby = findOrCreateLobby(metadata.lobbyId);
-        const playerIndex = lobby.players.findIndex(p => p.id === metadata.id);
-        if (playerIndex > -1) {
-            lobby.players.splice(playerIndex, 1);
-            broadcastPlayers(metadata.lobbyId);
+        if (metadata && metadata.lobbyId) {
+            const lobby = lobbies.get(metadata.lobbyId);
+            if (lobby) {
+                const playerIndex = lobby.players.findIndex(p => p.id === metadata.id);
+                if (playerIndex > -1) {
+                    lobby.players.splice(playerIndex, 1);
+                    checkGameAborted(metadata.lobbyId, metadata.id);
+
+                    broadcastPlayers(metadata.lobbyId);
+
+                    if (lobby.players.length === 0) {
+                        lobbies.delete(metadata.lobbyId);
+                    }
+                }
+            }
         }
+
+        console.log('client disconnected', metadata.id);
         clients.delete(ws);
-        console.log('Client disconnected');
     });
 });
 
@@ -555,8 +645,18 @@ function handleLeave(lobbyId, playerId) {
 
     const playerIndex = lobby.players.findIndex(p => p.id === playerId);
     if (playerIndex > -1) {
+        const player = lobby.players[playerIndex]
         lobby.players.splice(playerIndex, 1);
-        broadcastPlayers(lobbyId);
+        checkGameAborted(lobbyId, playerId);
+
+        // Exclude the leaving player from the broadcast so the client's resetGameState isn't overridden
+        broadcastToLobby(lobbyId, {
+            action: 'players',
+            players: lobby.players,
+            turn: lobby.game.turn,
+            lobbyId: lobbyId
+        }, playerId);
+        console.log('player leaved from', lobby.id, ':', player)
 
         // If lobby is empty, we could optionally remove it
         if (lobby.players.length === 0) {

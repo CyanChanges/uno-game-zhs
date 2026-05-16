@@ -22,7 +22,7 @@
             <p>分享大厅 ID 即可加入!</p>
         </div>
         <ul id="players"></ul>
-        <button id="ready">就绪</button>
+        <button id="ready" style="display: none;">就绪</button>
     </div>
     <div id="game" style="display: none;">
         <div id="turn-indicator">
@@ -43,6 +43,25 @@
             </div>
         </div>
         <div id="player-hand"></div>
+    </div>
+    <div id="game-over-overlay" class="hidden">
+        <div id="game-over-content">
+            <div id="game-over-icon"></div>
+            <h2 id="game-over-title"></h2>
+            <p id="game-over-message"></p>
+            <button id="game-over-btn">返回大厅</button>
+        </div>
+    </div>
+    <div id="dev-panel">
+        <div id="dev-panel-header">DEV <span id="dev-panel-toggle">▼</span></div>
+        <div id="dev-panel-body">
+            <button class="dev-btn" data-action="dev_add_cards" data-count="1">+1 牌</button>
+            <button class="dev-btn" data-action="dev_add_cards" data-count="5">+5 牌</button>
+            <button class="dev-btn" data-action="dev_remove_cards" data-count="1">-1 牌</button>
+            <button class="dev-btn" data-action="dev_remove_cards" data-count="5">-5 牌</button>
+            <button class="dev-btn" data-action="dev_skip">跳回合</button>
+            <button class="dev-btn call-win-btn" data-action="dev_call_win">🏆 胜利</button>
+        </div>
     </div>
     <script src="client.js"></script>
 </body>
