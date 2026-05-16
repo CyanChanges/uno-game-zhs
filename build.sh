@@ -32,6 +32,8 @@ esac
 FILE_NAME="UNO-${CURRENT_DATE}_${PLATFORM}_${ARCH}.zip"
 FULL_PATH="${TARGET_DIR}${FILE_NAME}"
 
+PKG="npx pkg"
+
 if [ -f "$FULL_PATH" ]; then
     rm "$FULL_PATH"
 fi
@@ -41,17 +43,26 @@ if [ -d "$DIST_DIR" ]; then
 fi
 mkdir -p "$DIST_DIR"
 
-echo "build for $PLATFORM..."
+echo "build for $PLATFORM $ARCH..."
 
 if [ "$PLATFORM" = "win" ]; then
-    # Windows 7 support
     outfile="${DIST_DIR}uno-server.exe"
-    pkg . --targets "node12-win-${ARCH}" --output "$outfile" --public
 
-    # rcedit "$outfile" --set-version-string "LegalCopyright" "Copyright (C) 2026 miruku (lovemilk)"
+    $PKG . --targets "node12-win-${ARCH}" --output "$outfile" --public
+
+    case "$ARCH" in
+      "ia32")  export GOARCH="386" ;;
+      "arm64") export GOARCH="arm64" ;;
+      *)       export GOARCH="amd64" ;;
+    esac
+    
+    export GOOS="windows"
+
+    # bash scripts/build-with-copyright "package.json" "$outfile"
 else
     outfile="${DIST_DIR}uno-server"
-    pkg . --targets "node12-${PLATFORM}-${ARCH}" --output "$outfile" --public
+    # Fallback to npx pkg for non-Windows platforms if they are still Node.js based
+    $PKG . --targets "node12-${PLATFORM}-${ARCH}" --output "$outfile" --public
 fi
 
 mkdir -p "$TARGET_DIR"

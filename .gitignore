@@ -238,3 +238,8 @@ yarn.lock
 
 /release
 /continue
+/winres
+
+__pycache__/
+
+*.syso
