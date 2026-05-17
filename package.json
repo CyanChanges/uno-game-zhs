@@ -5,10 +5,8 @@
     "start": "node server.js",
     "dev": "NODE_ENV=development nodemon --ext js,json,css,html server.js",
     "start:dev": "NODE_ENV=development nodemon server.js",
-    "serve": "vite",
-    "preview": "vite preview",
-    "test": "vitest",
-    "test:run": "vitest run"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "miruku (lovemilk)",

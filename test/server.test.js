@@ -32,7 +32,7 @@ function send(ws, msg) {
 }
 
 describe('UNO Server', () => {
-  let server, port
+  let server, port, lobbiesRef
 
   beforeEach(async () => {
     const httpServer = createServer()
@@ -41,6 +41,7 @@ describe('UNO Server', () => {
     const clients = new Map()
     const lobbies = new Map()
     const startedLobbies = new Set()
+    lobbiesRef = lobbies
 
     function createLobby(lobbyId) {
       return { id: lobbyId, players: [], game: { deck: [], discardPile: [], turn: 0, direction: 1, started: false } }
@@ -229,7 +230,29 @@ describe('UNO Server', () => {
       if (!lobby) return
       const playerIndex = lobby.players.findIndex(p => p.id === playerId)
       if (lobby.game.turn !== playerIndex) return
-      lobby.players[playerIndex].hand.push(lobby.game.deck.pop())
+
+      const player = lobby.players[playerIndex]
+
+      if (player.hand.length >= 100) {
+        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length
+        broadcastGameUpdate(lobbyId)
+        return
+      }
+
+      let card = lobby.game.deck.pop()
+      if (!card) {
+        if (lobby.game.discardPile.length >= 2) {
+          const topCard = lobby.game.discardPile.pop()
+          lobby.game.deck = lobby.game.discardPile
+          lobby.game.discardPile = [topCard]
+          shuffleDeck(lobbyId)
+          card = lobby.game.deck.pop()
+        }
+      }
+      if (card) {
+        lobby.players[playerIndex].hand.push(card)
+      }
+
       lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length
       broadcastGameUpdate(lobbyId)
     }
@@ -329,9 +352,54 @@ describe('UNO Server', () => {
             broadcastPlayers(meta.lobbyId)
             return
           }
-          case 'play': handlePlay(meta.lobbyId, meta.id, message.card); return
-          case 'draw': handleDraw(meta.lobbyId, meta.id); return
-          case 'leave': handleLeave(meta.lobbyId, meta.id); return
+          case 'play':
+            if (!lobbies.has(meta.lobbyId)) { ws.send(JSON.stringify({ action: 'error', message: '房间不存在' })); return }
+            handlePlay(meta.lobbyId, meta.id, message.card); return
+          case 'draw':
+            if (!lobbies.has(meta.lobbyId)) { ws.send(JSON.stringify({ action: 'error', message: '房间不存在' })); return }
+            handleDraw(meta.lobbyId, meta.id); return
+          case 'leave':
+            if (!lobbies.has(meta.lobbyId)) { ws.send(JSON.stringify({ action: 'error', message: '房间不存在' })); return }
+            handleLeave(meta.lobbyId, meta.id); return
+          case 'dev_add_cards': {
+            const lobby = findOrCreateLobby(meta.lobbyId)
+            if (!lobby.game.started) return
+            const player = lobby.players.find(p => p.id === meta.id)
+            if (!player) return
+            const count = Math.min(message.count || 1, 20)
+            let drawn = lobby.game.deck.splice(0, count)
+            if (drawn.length < count && lobby.game.discardPile.length >= 2) {
+              const topCard = lobby.game.discardPile.pop()
+              lobby.game.deck = lobby.game.discardPile
+              lobby.game.discardPile = [topCard]
+              shuffleDeck(meta.lobbyId)
+              const more = lobby.game.deck.splice(0, count - drawn.length)
+              drawn = [...drawn, ...more]
+            }
+            player.hand.push(...drawn)
+            broadcastGameUpdate(meta.lobbyId)
+            return
+          }
+          case 'dev_add_all_cards': {
+            const lobby = findOrCreateLobby(meta.lobbyId)
+            if (!lobby.game.started) return
+            const player = lobby.players.find(p => p.id === meta.id)
+            if (!player) return
+            let drawn = lobby.game.deck.splice(0, lobby.game.deck.length)
+            if (drawn.length === 0 && lobby.game.discardPile.length >= 2) {
+              const topCard = lobby.game.discardPile.pop()
+              lobby.game.deck = lobby.game.discardPile
+              lobby.game.discardPile = [topCard]
+              shuffleDeck(meta.lobbyId)
+              drawn = lobby.game.deck.splice(0, lobby.game.deck.length)
+            }
+            if (drawn.length > 0 && lobby.game.discardPile.length < 2) {
+              lobby.game.discardPile.push(drawn.shift())
+            }
+            player.hand.push(...drawn)
+            broadcastGameUpdate(meta.lobbyId)
+            return
+          }
         }
       })
 
@@ -570,6 +638,233 @@ describe('UNO Server', () => {
     const u = await a.next()
     expect(u.action).toBe('update')
     expect(u.hand).toHaveLength(8)
+    a.close()
+    b.close()
+  })
+
+  it('draw reshuffles discard pile when deck is empty', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    const lobby = lobbiesRef.get('r')
+    lobby.game.discardPile.push(...lobby.game.deck)
+    lobby.game.deck = []
+
+    send(a.ws, { action: 'draw' })
+    const u = await a.next()
+    expect(u.action).toBe('update')
+    expect(u.hand).toHaveLength(8)
+    a.close()
+    b.close()
+  })
+
+  it('draw passes turn when deck and discard pile are exhausted and no donor has >1 card', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    const lobby = lobbiesRef.get('r')
+    // Move cards from Bob to deck so Bob has only 1 card
+    lobby.game.deck.push(...lobby.players[1].hand.splice(1))
+    // Ensure deck and discard are exhausted
+    lobby.game.deck = []
+    lobby.game.discardPile.splice(1)
+
+    send(a.ws, { action: 'draw' })
+    const u = await a.next()
+    expect(u.action).toBe('update')
+    expect(u.hand).toHaveLength(7)
+    expect(u.turn).toBe(1)
+    a.close()
+    b.close()
+  })
+
+  it('draw passes turn when deck and discard pile are exhausted and no donor has >1 card', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    const lobby = lobbiesRef.get('r')
+    lobby.game.deck = []
+    lobby.game.discardPile.splice(1)
+
+    send(a.ws, { action: 'draw' })
+    const u = await a.next()
+    expect(u.action).toBe('update')
+    expect(u.hand).toHaveLength(7)
+    expect(u.turn).toBe(1)
+    a.close()
+    b.close()
+  })
+
+  it('draw works after dev_add_cards depletes the deck', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    // Deplete the deck by moving all cards to Alice's hand
+    const lobby = lobbiesRef.get('r')
+    const remainingCards = lobby.game.deck.splice(0, lobby.game.deck.length)
+    lobby.players[0].hand.push(...remainingCards)
+    // Give discard pile enough cards to reshuffle count=2
+    const extraCards = lobby.players[0].hand.splice(0, 4)
+    lobby.game.discardPile.push(...extraCards)
+    expect(lobby.game.deck.length).toBe(0)
+    expect(lobby.game.discardPile.length >= 2).toBe(true)
+
+    // dev_add_cards should reshuffle discard pile and add cards
+    const aliceHandBefore = lobby.players[0].hand.length
+    send(a.ws, { action: 'dev_add_cards', count: 2 })
+    const u1 = await a.next()
+    expect(u1.action).toBe('update')
+    expect(u1.hand.length).toBe(aliceHandBefore + 2) // reshuffled 2 cards added
+    a.close()
+    b.close()
+  })
+
+  it('dev_add_all_cards adds all deck cards to hand', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    const lobby = lobbiesRef.get('r')
+    const deckSize = lobby.game.deck.length
+
+    send(a.ws, { action: 'dev_add_all_cards' })
+    const u = await a.next()
+    expect(u.action).toBe('update')
+    // Alice gets all deck cards minus 1 (which seeds the discard pile to enable draws)
+    expect(u.hand.length).toBe(7 + deckSize - 1) // 1 card reserved for discard
+    expect(lobby.game.deck.length).toBe(0)
+    expect(lobby.game.discardPile.length).toBe(2)
+    a.close()
+    b.close()
+  })
+
+  it('player with >= 100 cards skips draw others pass when deck empty', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    // Give Alice all deck cards (99 after reserve) then push to >= 100
+    send(a.ws, { action: 'dev_add_all_cards' })
+    await a.next()
+    send(a.ws, { action: 'dev_add_cards', count: 1 }) // reshuffles the reserved card → Alice 100
+    await a.next()
+
+    const lobby = lobbiesRef.get('r')
+    const aliceHand = lobby.players[0].hand.length
+    const bobHand = lobby.players[1].hand.length
+    expect(aliceHand >= 100).toBe(true)
+
+    // Alice draws → >= 100, skips turn, hand unchanged
+    send(a.ws, { action: 'draw' })
+    const u1 = await a.next()
+    expect(u1.action).toBe('update')
+    expect(u1.hand.length).toBe(aliceHand)
+    expect(u1.turn).toBe(1)
+    expect(lobby.players[0].hand.length).toBe(aliceHand)
+
+    // Bob draws → deck empty, discard < 2 → pass turn, neither changes
+    send(b.ws, { action: 'draw' })
+    const u2 = await a.next()
+    expect(u2.action).toBe('update')
+    expect(u2.hand.length).toBe(aliceHand)
+    expect(lobby.players[0].hand.length).toBe(aliceHand)
+    expect(lobby.players[1].hand.length).toBe(bobHand)
+    a.close()
+    b.close()
+  })
+
+  it('returns error when lobby does not exist for game action', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    // Simulate server restart: delete the lobby
+    lobbiesRef.delete('r')
+
+    send(a.ws, { action: 'draw' })
+    const err = await a.next()
+    expect(err.action).toBe('error')
+    expect(err.message).toContain('房间')
     a.close()
     b.close()
   })

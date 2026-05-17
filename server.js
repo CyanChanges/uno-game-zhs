@@ -457,7 +457,27 @@ function handleDraw(lobbyId, playerId) {
     }
 
     const player = lobby.players[playerIndex];
-    player.hand.push(lobby.game.deck.pop());
+
+    // Players with >= 100 cards skip drawing
+    if (player.hand.length >= 100) {
+        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+        broadcastGameUpdate(lobbyId);
+        return;
+    }
+
+    let card = lobby.game.deck.pop();
+    if (!card) {
+        if (lobby.game.discardPile.length >= 2) {
+            const topCard = lobby.game.discardPile.pop();
+            lobby.game.deck = lobby.game.discardPile;
+            lobby.game.discardPile = [topCard];
+            shuffleDeck(lobbyId);
+            card = lobby.game.deck.pop();
+        }
+    }
+    if (card) {
+        player.hand.push(card);
+    }
     lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
     broadcastGameUpdate(lobbyId);
 }
@@ -744,22 +764,37 @@ wss.on('connection', (ws) => {
                 }
 
                 case 'play':
+                    if (!lobbies.has(metadata.lobbyId)) {
+                        ws.send(JSON.stringify({ action: 'error', message: '游戏房间已不存在，请刷新页面' })); return;
+                    }
                     handlePlay(metadata.lobbyId, metadata.id, message.card);
                     return;
 
                 case 'draw':
+                    if (!lobbies.has(metadata.lobbyId)) {
+                        ws.send(JSON.stringify({ action: 'error', message: '游戏房间已不存在，请刷新页面' })); return;
+                    }
                     handleDraw(metadata.lobbyId, metadata.id);
                     return;
 
                 case 'uno':
+                    if (!lobbies.has(metadata.lobbyId)) {
+                        ws.send(JSON.stringify({ action: 'error', message: '游戏房间已不存在，请刷新页面' })); return;
+                    }
                     handleUno(metadata.lobbyId, metadata.id);
                     return;
 
                 case 'play_multiple':
+                    if (!lobbies.has(metadata.lobbyId)) {
+                        ws.send(JSON.stringify({ action: 'error', message: '游戏房间已不存在，请刷新页面' })); return;
+                    }
                     handlePlayMultiple(metadata.lobbyId, metadata.id, message.cards);
                     return;
 
                 case 'leave':
+                    if (!lobbies.has(metadata.lobbyId)) {
+                        ws.send(JSON.stringify({ action: 'error', message: '游戏房间已不存在，请刷新页面' })); return;
+                    }
                     handleLeave(metadata.lobbyId, metadata.id);
                     return;
 
@@ -820,7 +855,36 @@ wss.on('connection', (ws) => {
                     const player2 = lobby2.players.find(p => p.id === metadata.id);
                     if (!player2) { ws.send(JSON.stringify({ action: 'error', message: '玩家ID未找到' })); return; }
                     const count = Math.min(message.count || 1, 20);
-                    const drawn = lobby2.game.deck.splice(0, count);
+                    let drawn = lobby2.game.deck.splice(0, count);
+                    if (drawn.length < count && lobby2.game.discardPile.length >= 2) {
+                        const topCard = lobby2.game.discardPile.pop();
+                        lobby2.game.deck = lobby2.game.discardPile;
+                        lobby2.game.discardPile = [topCard];
+                        shuffleDeck(metadata.lobbyId);
+                        const more = lobby2.game.deck.splice(0, count - drawn.length);
+                        drawn = [...drawn, ...more];
+                    }
+                    player2.hand.push(...drawn);
+                    broadcastGameUpdate(metadata.lobbyId);
+                    return;
+                }
+                case 'dev_add_all_cards': {
+                    const lobby2 = findOrCreateLobby(metadata.lobbyId);
+                    if (!lobby2.game.started) { ws.send(JSON.stringify({ action: 'error', message: '对局未开始' })); return; }
+                    const player2 = lobby2.players.find(p => p.id === metadata.id);
+                    if (!player2) { ws.send(JSON.stringify({ action: 'error', message: '玩家ID未找到' })); return; }
+                    let drawn = lobby2.game.deck.splice(0, lobby2.game.deck.length);
+                    if (drawn.length === 0 && lobby2.game.discardPile.length >= 2) {
+                        const topCard = lobby2.game.discardPile.pop();
+                        lobby2.game.deck = lobby2.game.discardPile;
+                        lobby2.game.discardPile = [topCard];
+                        shuffleDeck(metadata.lobbyId);
+                        drawn = lobby2.game.deck.splice(0, lobby2.game.deck.length);
+                    }
+                    // Reserve card for discard so draws can reshuffle
+                    if (drawn.length > 0 && lobby2.game.discardPile.length < 2) {
+                        lobby2.game.discardPile.push(drawn.shift());
+                    }
                     player2.hand.push(...drawn);
                     broadcastGameUpdate(metadata.lobbyId);
                     return;

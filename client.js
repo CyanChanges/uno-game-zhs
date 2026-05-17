@@ -36,6 +36,9 @@ let myLobbyId = null;
 const joinFormContainer = document.createElement('div');
 joinFormContainer.id = 'join-form-container';
 
+let isDisconnected = false;
+let disconnectToastTimeout = null;
+
 function encodeUGC(content) {
     const tempEl = document.createElement('div');
     tempEl.textContent = content;
@@ -96,6 +99,8 @@ function connect() {
 
     ws.onopen = () => {
         console.log('Connected to server');
+        isDisconnected = false;
+        hideDisconnectedToast();
     };
 
     ws.onmessage = (event) => {
@@ -169,6 +174,8 @@ function connect() {
 
     ws.onclose = (event) => {
         console.log('Disconnected from server. Reconnecting...', event.code, event.reason);
+        isDisconnected = true;
+        showDisconnectedToast('connecting');
         // Only reconnect if it wasn't a manual close
         if (event.code !== 1000) {
             setTimeout(connect, 1000);
@@ -188,8 +195,12 @@ function canSendMessage() {
 function sendMessage(message) {
     if (canSendMessage()) {
         ws.send(JSON.stringify(message));
+        return true;
     } else {
         console.warn('WebSocket is not connected. Message not sent:', message);
+        isDisconnected = true;
+        showDisconnectedToast('action');
+        return false;
     }
 }
 
@@ -825,6 +836,32 @@ function showCopyFeedback(element) {
         element.textContent = originalText;
         element.style.background = 'rgba(255,255,255,0.2)';
     }, 1000);
+}
+
+function showDisconnectedToast(reason) {
+    const toast = document.getElementById('disconnected-toast') || createDisconnectedToast();
+    // if (reason === 'action') {
+    //     toast.textContent = '';
+    // } else {
+    toast.textContent = '连接已断开，正在重连... 如持续失败请刷新页面';
+    // }
+    toast.classList.add('visible');
+    clearTimeout(disconnectToastTimeout);
+}
+
+function hideDisconnectedToast() {
+    const toast = document.getElementById('disconnected-toast');
+    if (toast) {
+        toast.classList.remove('visible');
+    }
+    clearTimeout(disconnectToastTimeout);
+}
+
+function createDisconnectedToast() {
+    const toast = document.createElement('div');
+    toast.id = 'disconnected-toast';
+    document.body.appendChild(toast);
+    return toast;
 }
 
 function createLeaveLobbyButton() {
