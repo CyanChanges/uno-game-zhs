@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "scripts": {
     "start": "node server.js",
-    "dev": "NODE_ENV=development nodemon server.js",
+    "dev": "NODE_ENV=development nodemon --ext js,json,css,html server.js",
     "start:dev": "NODE_ENV=development nodemon server.js",
     "serve": "vite",
     "preview": "vite preview",

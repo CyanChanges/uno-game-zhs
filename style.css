@@ -1269,3 +1269,26 @@ body.player-action-disabled #center-area {
 .dev-btn.call-win-btn:hover {
     background: rgba(255,107,107,0.15);
 }
+
+footer {
+    margin-top: 2rem;
+    font-size: 0.75rem;
+    color: #6b7280;
+    text-align: center;
+}
+
+footer a {
+    color: #6b7280;
+    text-decoration: underline;
+    text-decoration-color: #4b5563;
+}
+
+footer a:hover {
+    color: #9ca3af;
+    text-decoration-color: #6b7280;
+}
+
+footer, footer>* {
+    user-select: text !important;
+    -webkit-user-select: text !important;
+}
