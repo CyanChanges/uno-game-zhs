@@ -34,7 +34,8 @@
     "assets": [
       "index.html",
       "client.js",
-      "style.css"
+      "style.css",
+      "aiplayer.js"
     ]
   },
   "pefile": {

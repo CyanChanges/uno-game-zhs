@@ -2,6 +2,7 @@ const { WebSocketServer } = require('ws');
 const { Server } = require('http');
 const { readFileSync } = require('fs');
 const path = require('path')
+const aiplayer = require('./aiplayer');
 
 const allowFiles = [['index.html', 'text/html'], ['client.js', 'text/javascript'], ['style.css', 'text/css']]
 const files = {}
@@ -46,6 +47,7 @@ const wss = new WebSocketServer({ noServer: true });
 const clients = new Map();
 const lobbies = new Map();
 const startedLobbies = new Set();
+const aiTimeouts = new Map();
 
 function createLobby(lobbyId) {
     return {
@@ -179,6 +181,8 @@ function startGame(lobbyId) {
             client.send(JSON.stringify(message));
         }
     });
+
+    scheduleAIMove(lobbyId);
 }
 
 function broadcastWin(lobbyId, winnerName) {
@@ -198,6 +202,8 @@ function broadcastWin(lobbyId, winnerName) {
             metadata.lobbyId = null;
         }
     });
+
+    clearAllAITimeouts(lobbyId);
 
     // Reset game state completely
     lobby.players.length = 0;
@@ -226,6 +232,8 @@ function broadcastGameAborted(lobbyId, excludePlayerId) {
         }
     });
 
+    clearAllAITimeouts(lobbyId);
+
     // Fully clean up lobby — players are gone, just like broadcastWin
     lobby.players = [];
     lobby.game.deck = [];
@@ -239,8 +247,65 @@ function broadcastGameAborted(lobbyId, excludePlayerId) {
 function checkGameAborted(lobbyId, excludePlayerId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby || !lobby.game.started) return;
-    if (lobby.players.length < 2) {
+    const realPlayers = lobby.players.filter(p => !p.isAI);
+    if (realPlayers.length === 0) {
         broadcastGameAborted(lobbyId, excludePlayerId);
+    }
+}
+
+function generateAIName(lobby) {
+    let index = 1;
+    while (lobby.players.some(p => p.name === `AI-${index}`)) {
+        index++;
+    }
+    return `AI-${index}`;
+}
+
+function clearAITimeout(playerId) {
+    if (aiTimeouts.has(playerId)) {
+        clearTimeout(aiTimeouts.get(playerId));
+        aiTimeouts.delete(playerId);
+    }
+}
+
+function clearAllAITimeouts(lobbyId) {
+    const lobby = lobbies.get(lobbyId);
+    if (!lobby) return;
+    for (const player of lobby.players) {
+        if (player.isAI) {
+            clearAITimeout(player.id);
+        }
+    }
+}
+
+function performAIMove(lobbyId) {
+    const lobby = lobbies.get(lobbyId);
+    if (!lobby || !lobby.game.started) return;
+
+    const currentPlayer = lobby.players[lobby.game.turn];
+    if (!currentPlayer || !currentPlayer.isAI) return;
+
+    const decision = aiplayer.decideMove(lobby);
+
+    if (decision.type === 'play') {
+        handlePlay(lobbyId, currentPlayer.id, decision.card);
+    } else if (decision.type === 'play_multiple') {
+        handlePlayMultiple(lobbyId, currentPlayer.id, decision.cards);
+    } else if (decision.type === 'draw') {
+        handleDraw(lobbyId, currentPlayer.id);
+    }
+}
+
+function scheduleAIMove(lobbyId) {
+    const lobby = lobbies.get(lobbyId);
+    if (!lobby || !lobby.game.started) return;
+
+    const currentPlayer = lobby.players[lobby.game.turn];
+    if (currentPlayer && currentPlayer.isAI) {
+        clearAITimeout(currentPlayer.id);
+        const delay = 800 + Math.random() * 1200;
+        const timeout = setTimeout(() => performAIMove(lobbyId), delay);
+        aiTimeouts.set(currentPlayer.id, timeout);
     }
 }
 
@@ -451,6 +516,8 @@ function broadcastGameUpdate(lobbyId) {
             client.send(JSON.stringify(message));
         }
     });
+
+    scheduleAIMove(lobbyId);
 }
 
 function handleUno(lobbyId, playerId) {
@@ -478,7 +545,7 @@ wss.on('connection', (ws) => {
     const metadata = { id };
     clients.set(ws, metadata);
 
-    ws.send(JSON.stringify({ action: 'init', dev: isDev() }))
+    ws.send(JSON.stringify({ action: 'init', dev: isDev(), id }))
     console.log('client connected', id)
 
     ws.on('message', (messageAsString) => {
@@ -538,6 +605,92 @@ wss.on('connection', (ws) => {
                     lobby.players.push(player);
                     broadcastPlayers(metadata.lobbyId);
                     console.log('player jointed to', lobby.id, ':', player)
+                    return;
+                }
+
+                case 'add_ai': {
+                    const lobby = findOrCreateLobby(metadata.lobbyId);
+                    const creator = lobby.players.find(p => p.id === metadata.id);
+                    if (!creator || !creator.isCreator) {
+                        ws.send(JSON.stringify({
+                            action: 'error',
+                            message: '只有房主可以邀请 AI'
+                        }));
+                        return;
+                    }
+                    if (startedLobbies.has(lobby.id)) {
+                        ws.send(JSON.stringify({
+                            action: 'error',
+                            message: '对局已开始'
+                        }));
+                        return;
+                    }
+                    const aiId = uuidv4();
+                    const aiName = generateAIName(lobby);
+                    const aiPlayer = {
+                        id: aiId,
+                        name: aiName,
+                        ready: false,
+                        isCreator: false,
+                        isAI: true
+                    };
+                    lobby.players.push(aiPlayer);
+                    broadcastPlayers(metadata.lobbyId);
+                    return;
+                }
+
+                case 'ai_ready': {
+                    const lobby = findOrCreateLobby(metadata.lobbyId);
+                    const creator = lobby.players.find(p => p.id === metadata.id);
+                    if (!creator || !creator.isCreator) {
+                        ws.send(JSON.stringify({
+                            action: 'error',
+                            message: '只有房主可以准备 AI'
+                        }));
+                        return;
+                    }
+                    const aiPlayer = lobby.players.find(p => p.id === message.playerId && p.isAI);
+                    if (!aiPlayer) {
+                        ws.send(JSON.stringify({
+                            action: 'error',
+                            message: 'AI 玩家未找到'
+                        }));
+                        return;
+                    }
+                    aiPlayer.ready = !aiPlayer.ready;
+                    broadcastPlayers(metadata.lobbyId);
+                    checkStartGame(metadata.lobbyId);
+                    return;
+                }
+
+                case 'remove_ai': {
+                    const lobby = findOrCreateLobby(metadata.lobbyId);
+                    const creator = lobby.players.find(p => p.id === metadata.id);
+                    if (!creator || !creator.isCreator) {
+                        ws.send(JSON.stringify({
+                            action: 'error',
+                            message: '只有房主可以踢出 AI'
+                        }));
+                        return;
+                    }
+                    if (startedLobbies.has(lobby.id)) {
+                        ws.send(JSON.stringify({
+                            action: 'error',
+                            message: '对局已开始'
+                        }));
+                        return;
+                    }
+                    const aiIndex = lobby.players.findIndex(p => p.id === message.playerId && p.isAI);
+                    if (aiIndex === -1) {
+                        ws.send(JSON.stringify({
+                            action: 'error',
+                            message: 'AI 玩家未找到'
+                        }));
+                        return;
+                    }
+                    clearAITimeout(lobby.players[aiIndex].id);
+                    lobby.players.splice(aiIndex, 1);
+                    broadcastPlayers(metadata.lobbyId);
                     return;
                 }
 
@@ -646,7 +799,15 @@ wss.on('connection', (ws) => {
             if (lobby) {
                 const playerIndex = lobby.players.findIndex(p => p.id === metadata.id);
                 if (playerIndex > -1) {
+                    const player = lobby.players[playerIndex];
                     lobby.players.splice(playerIndex, 1);
+
+                    if (player && player.isCreator) {
+                        const removedAIs = lobby.players.filter(p => p.isAI);
+                        lobby.players = lobby.players.filter(p => !p.isAI);
+                        for (const ai of removedAIs) clearAITimeout(ai.id);
+                    }
+
                     checkGameAborted(metadata.lobbyId, metadata.id);
 
                     broadcastPlayers(metadata.lobbyId);
@@ -671,6 +832,13 @@ function handleLeave(lobbyId, playerId) {
     if (playerIndex > -1) {
         const player = lobby.players[playerIndex]
         lobby.players.splice(playerIndex, 1);
+
+        if (player.isCreator) {
+            const removedAIs = lobby.players.filter(p => p.isAI);
+            lobby.players = lobby.players.filter(p => !p.isAI);
+            for (const ai of removedAIs) clearAITimeout(ai.id);
+        }
+
         checkGameAborted(lobbyId, playerId);
 
         // Exclude the leaving player from the broadcast so the client's resetGameState isn't overridden

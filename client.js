@@ -16,6 +16,7 @@ const wildColorPicker = document.getElementById('wild-color-picker');
 const colorOptions = document.getElementById('color-options');
 const lobbyInfo = document.getElementById('lobby-info');
 const currentLobbyId = document.getElementById('current-lobby-id');
+const inviteAIBtn = document.getElementById('invite-ai');
 
 let myId;
 let ws;
@@ -97,6 +98,7 @@ function connect() {
         const message = JSON.parse(event.data);
 
         if (message.action === 'init') {
+            myId = message.id;
             if (message.dev) setupDevPanel();
             return;
         }
@@ -264,6 +266,7 @@ function resetGameState() {
         wildColorPicker.style.display = 'none';
         hideLobbyInfo();
         readyButton.style.display = 'none';
+        if (inviteAIBtn) inviteAIBtn.style.display = 'none';
 
         // Clear players list
         playersList.innerHTML = '';
@@ -299,9 +302,16 @@ function updatePlayers(players, turn) {
             playerDiv.classList.add('creator');
         }
 
+        if (player.isAI) {
+            playerDiv.classList.add('ai');
+        }
+
         let displayText = player.name;
         if (player.isCreator) {
             displayText += ' 👑';
+        }
+        if (player.isAI) {
+            displayText += ' 🤖';
         }
 
         // `textContent` is safe
@@ -316,32 +326,55 @@ function updatePlayers(players, turn) {
         }
 
         const li = document.createElement('li');
-        // `li` is safe
-        // let playerText = encodeUGC(player.name);
-        let playerText = player.name
+        li.classList.add('player-row');
+        if (player.isCreator) li.classList.add('creator');
+        if (player.isAI) li.classList.add('ai');
 
-        // Add creator indicator
-        if (player.isCreator) {
-            playerText += ' 👑';
-        }
+        const nameSpan = document.createElement('span');
+        nameSpan.classList.add('player-name');
+        let nameText = player.name;
+        if (player.isCreator) nameText += ' 👑';
+        if (player.isAI) nameText += ' 🤖';
+        if (player.ready) nameText += '（已准备）';
+        nameSpan.textContent = nameText;
+        if (i === turn) nameSpan.style.fontWeight = 'bold';
+        li.appendChild(nameSpan);
 
-        // Add ready status
-        if (player.ready) {
-            playerText += '（已准备）';
-        }
+        // Ready button for unready AI players (only visible to creator)
+        const me = players.find(p => p.id === myId);
+        if (player.isAI && me && me.isCreator) {
+            const actionsDiv = document.createElement('span');
+            actionsDiv.classList.add('ai-actions');
 
-        li.textContent = playerText;
+            const readyAiBtn = document.createElement('button');
+            readyAiBtn.textContent = player.ready ? '取消' : '就绪';
+            readyAiBtn.classList.add('ready-ai-btn');
+            readyAiBtn.addEventListener('click', () => {
+                sendMessage({ action: 'ai_ready', playerId: player.id });
+            });
+            actionsDiv.appendChild(readyAiBtn);
 
-        if (i === turn) {
-            li.style.fontWeight = 'bold';
-        }
+            const kickAiBtn = document.createElement('button');
+            kickAiBtn.textContent = '踢出';
+            kickAiBtn.classList.add('kick-ai-btn');
+            kickAiBtn.addEventListener('click', () => {
+                sendMessage({ action: 'remove_ai', playerId: player.id });
+            });
+            actionsDiv.appendChild(kickAiBtn);
 
-        // Add special styling for creator
-        if (player.isCreator) {
-            li.classList.add('creator');
+            li.appendChild(actionsDiv);
         }
 
         playersList.appendChild(li);
+    }
+
+    // Show/hide invite AI button
+    const me = players.find(p => p.id === myId);
+    if (inviteAIBtn) {
+        inviteAIBtn.style.display = (me && me.isCreator) ? '' : 'none';
+    }
+    if (readyButton && me) {
+        readyButton.textContent = me.ready ? '取消' : '就绪';
     }
 }
 
@@ -634,6 +667,12 @@ joinButton.addEventListener('click', async () => {
     }
     sendMessage(message);
 });
+
+if (inviteAIBtn) {
+    inviteAIBtn.addEventListener('click', () => {
+        sendMessage({ action: 'add_ai' });
+    });
+}
 
 readyButton.addEventListener('click', () => {
     sendMessage({ action: 'ready' });
