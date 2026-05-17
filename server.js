@@ -172,7 +172,7 @@ function startGame(lobbyId) {
             const player = lobby.players.find(p => p.id === metadata.id);
             const message = {
                 action: 'start',
-                players: lobby.players,
+                players: sanitizePlayersForClient(lobby.players),
                 discardPile: lobby.game.discardPile,
                 turn: lobby.game.turn,
                 hand: player.hand,
@@ -491,6 +491,13 @@ function checkAutoUno(lobbyId, player) {
     return false;
 }
 
+function sanitizePlayersForClient(players) {
+    return players.map(p => {
+        const { hand, ...rest } = p;
+        return { ...rest, cardCount: hand ? hand.length : 0 };
+    });
+}
+
 function broadcastGameUpdate(lobbyId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
@@ -508,11 +515,12 @@ function broadcastGameUpdate(lobbyId) {
             const player = lobby.players.find(p => p.id === metadata.id);
             const message = {
                 action: 'update',
-                players: lobby.players,
+                players: sanitizePlayersForClient(lobby.players),
                 discardPile: lobby.game.discardPile,
                 turn: lobby.game.turn,
                 hand: player.hand
             };
+
             client.send(JSON.stringify(message));
         }
     });
@@ -566,7 +574,6 @@ wss.on('connection', (ws) => {
             switch (message.action) {
                 case 'join': {
                     metadata.name = message.name;
-                    // metadata.lobbyId = message.lobbyId || generateLobbyId();
                     if (typeof message.lobbyId !== 'string' || !message.lobbyId.length) {
                         ws.send(JSON.stringify({
                             action: 'error',
@@ -574,8 +581,7 @@ wss.on('connection', (ws) => {
                         }));
                         return
                     }
-                    metadata.lobbyId = message.lobbyId;
-                    let lobby = findOrCreateLobby(metadata.lobbyId);
+                    let lobby = findOrCreateLobby(message.lobbyId);
 
                     if (startedLobbies.has(lobby.id)) {
                         ws.send(JSON.stringify({
@@ -592,8 +598,10 @@ wss.on('connection', (ws) => {
                             action: 'error',
                             message: '该大厅中已存在同名玩家，请选择其他名称'
                         }));
-                        return; // 跳出 switch
+                        return;
                     }
+
+                    metadata.lobbyId = message.lobbyId;
 
                     const isCreator = lobby.players.length === 0;
                     const player = {

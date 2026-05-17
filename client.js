@@ -99,6 +99,7 @@ function connect() {
 
         if (message.action === 'init') {
             myId = message.id;
+            console.log('[init] myId =', myId);
             if (message.dev) setupDevPanel();
             return;
         }
@@ -116,6 +117,7 @@ function connect() {
             players = message.players;
             currentTurn = message.turn;
             myLobbyId = message.lobbyId;
+            console.log('[players] myId =', myId, 'players =', players.map(p => ({ id: p.id, name: p.name })));
             updatePlayers(message.players, message.turn);
             updateTurnIndicator();
             showLobbyInfo(message.lobbyId);
@@ -123,6 +125,7 @@ function connect() {
 
         if (message.action === 'start') {
             myId = message.id;
+            console.log('[start] myId =', myId, 'players =', message.players.map(p => ({ id: p.id, name: p.name })), 'turn =', message.turn);
             lobbyDiv.style.display = 'none';
             gameDiv.style.display = 'block';
             players = message.players;
@@ -135,6 +138,7 @@ function connect() {
         }
 
         if (message.action === 'update') {
+            console.log('[update] myId =', myId, 'turn =', message.turn, 'players =', message.players.map(p => ({ id: p.id, name: p.name })), 'current =', message.players[message.turn] ? message.players[message.turn].id : null);
             players = message.players;
             currentTurn = message.turn;
             myHand = message.hand;
@@ -189,6 +193,8 @@ function updateTurnIndicator() {
 
     const currentPlayer = players[currentTurn];
     const isMyTurn = currentPlayer && currentPlayer.id === myId;
+
+    console.log('[turn] myId =', myId, 'currentPlayer.id =', currentPlayer ? currentPlayer.id : null, 'isMyTurn =', isMyTurn);
 
     // `textContent` is safe
     if (isMyTurn) {
@@ -292,8 +298,7 @@ function updatePlayers(players, turn) {
             playerDiv.classList.add('active');
         }
 
-        // Check for UNO condition (1 card or multiple same-number cards)
-        if (player.hand && isUnoCondition(player.hand)) {
+        if (player.uno) {
             playerDiv.classList.add('uno');
         }
 
@@ -315,8 +320,8 @@ function updatePlayers(players, turn) {
         }
 
         // `textContent` is safe
-        if (player.hand) {
-            playerDiv.textContent = `${displayText}（${player.hand.length} 张牌）`;
+        if (player.cardCount !== undefined && player.id !== myId) {
+            playerDiv.textContent = `${displayText}（${player.cardCount} 张牌）`;
         } else {
             playerDiv.textContent = displayText;
         }
@@ -376,18 +381,6 @@ function updatePlayers(players, turn) {
     if (readyButton && me) {
         readyButton.textContent = me.ready ? '取消' : '就绪';
     }
-}
-
-function isUnoCondition(hand) {
-    if (hand.length === 1) return true;
-
-    // Check if all cards have the same number/type
-    if (hand.length > 1) {
-        const firstCard = hand[0];
-        return hand.every(card => card.type === firstCard.type && card.type !== 'wild' && card.type !== 'wild4');
-    }
-
-    return false;
 }
 
 function updateHand(hand) {
