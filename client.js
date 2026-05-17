@@ -419,6 +419,11 @@ function updateHand(hand) {
 }
 
 function handleCardClick(card, cardIndex, hand) {
+    // If wild color picker is open and this card is not wild, dismiss picker
+    if (wildColorPicker.style.display !== 'none' && card.type !== 'wild' && card.type !== 'wild4') {
+        hideWildColorPicker();
+    }
+
     // Check if we're selecting multiple cards
     if (isSelectingMultiple) {
         toggleCardSelection(card, cardIndex, hand);
@@ -500,6 +505,7 @@ function playSelectedCards() {
 function clearSelection() {
     selectedCards = [];
     isSelectingMultiple = false;
+    hideWildColorPicker();
     updateHand(getCurrentHand());
 }
 
@@ -629,6 +635,8 @@ colorOptions.addEventListener('click', (e) => {
         }
     }
 });
+
+document.getElementById('cancel-wild-btn').addEventListener('click', hideWildColorPicker);
 
 joinButton.addEventListener('click', async () => {
     const name = nameInput.value.trim();

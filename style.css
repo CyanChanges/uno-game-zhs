@@ -435,6 +435,7 @@ h1 {
     gap: 15px;
     justify-content: center;
     margin-top: 15px;
+    margin-bottom: 15px;
 }
 
 .color-option {
@@ -451,6 +452,23 @@ h1 {
     transform: scale(1.15);
     border-color: #667eea;
     box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+}
+
+#cancel-wild-btn {
+    padding: 8px 20px;
+    border: 1px solid #374151;
+    border-radius: 8px;
+    background: transparent;
+    color: #a0aec0;
+    font-size: 0.875rem;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.2s;
+}
+
+#cancel-wild-btn:hover {
+    border-color: #e74c3c;
+    color: #e74c3c;
 }
 
 #player-hand {
