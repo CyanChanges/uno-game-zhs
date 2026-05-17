@@ -48,6 +48,8 @@ const clients = new Map();
 const lobbies = new Map();
 const startedLobbies = new Set();
 const aiTimeouts = new Map();
+const disconnectTimers = new Map(); // playerId -> timeout for reconnect grace period
+const reconnectTimers = new Map(); // playerId -> timeout for 15s turn skip
 
 function createLobby(lobbyId) {
     return {
@@ -249,7 +251,7 @@ function checkGameAborted(lobbyId, excludePlayerId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby || !lobby.game.started) return;
     const realPlayers = lobby.players.filter(p => !p.isAI);
-    if (lobby.players.length < 2 || realPlayers.length === 0) {
+    if (realPlayers.length === 0) {
         broadcastGameAborted(lobbyId, excludePlayerId);
     }
 }
@@ -448,7 +450,7 @@ function handlePlay(lobbyId, playerId, card) {
 
 function handleDraw(lobbyId, playerId) {
     const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
+    if (!lobby || !lobby.game.started) return;
 
     const playerIndex = lobby.players.findIndex(p => p.id === playerId);
 
@@ -534,6 +536,7 @@ function broadcastGameUpdate(lobbyId) {
         const metadata = clients.get(client);
         if (metadata.lobbyId === lobbyId) {
             const player = lobby.players.find(p => p.id === metadata.id);
+            if (!player) return;
             const message = {
                 action: 'update',
                 players: sanitizePlayersForClient(lobby.players),
@@ -605,6 +608,32 @@ wss.on('connection', (ws) => {
                     let lobby = findOrCreateLobby(message.lobbyId);
 
                     if (startedLobbies.has(lobby.id)) {
+                        // Allow reconnect if a disconnected player with same name exists
+                        const disconnectedPlayer = lobby.players.find(p => p.disconnected && p.name.toLowerCase() === (message.name || '').toLowerCase());
+                        if (disconnectedPlayer) {
+                            const oldTimer = disconnectTimers.get(disconnectedPlayer.id);
+                            if (oldTimer) clearTimeout(oldTimer);
+                            disconnectTimers.delete(disconnectedPlayer.id);
+                            const retryTimer = reconnectTimers.get(disconnectedPlayer.id);
+                            if (retryTimer) clearTimeout(retryTimer);
+                            reconnectTimers.delete(disconnectedPlayer.id);
+                            disconnectedPlayer.reconnectDeadline = null;
+                            disconnectedPlayer.disconnected = false;
+                            metadata.name = disconnectedPlayer.name;
+                            metadata.lobbyId = message.lobbyId;
+                            metadata.id = disconnectedPlayer.id;
+                            ws.send(JSON.stringify({ action: 'init', id: disconnectedPlayer.id, dev: isDev() }));
+                            broadcastPlayers(message.lobbyId);
+                            ws.send(JSON.stringify({
+                                action: 'start',
+                                id: disconnectedPlayer.id,
+                                players: sanitizePlayersForClient(lobby.players),
+                                discardPile: lobby.game.discardPile,
+                                turn: lobby.game.turn,
+                                hand: disconnectedPlayer.hand
+                            }));
+                            return;
+                        }
                         ws.send(JSON.stringify({
                             action: 'error',
                             message: '大厅已开始对局, 请使用其他名称'
@@ -615,6 +644,22 @@ wss.on('connection', (ws) => {
                     // 检查重名
                     const existingPlayer = lobby.players.find(p => p.name.toLowerCase() === message.name.toLowerCase());
                     if (existingPlayer) {
+                        if (existingPlayer.disconnected) {
+                            const oldTimer = disconnectTimers.get(existingPlayer.id);
+                            if (oldTimer) clearTimeout(oldTimer);
+                            disconnectTimers.delete(existingPlayer.id);
+                            const retryTimer = reconnectTimers.get(existingPlayer.id);
+                            if (retryTimer) clearTimeout(retryTimer);
+                            reconnectTimers.delete(existingPlayer.id);
+                            existingPlayer.reconnectDeadline = null;
+                            existingPlayer.disconnected = false;
+                            metadata.name = existingPlayer.name;
+                            metadata.lobbyId = message.lobbyId;
+                            metadata.id = existingPlayer.id;
+                            ws.send(JSON.stringify({ action: 'init', id: existingPlayer.id, dev: isDev() }));
+                            broadcastPlayers(message.lobbyId);
+                            return;
+                        }
                         ws.send(JSON.stringify({
                             action: 'error',
                             message: '该大厅中已存在同名玩家，请选择其他名称'
@@ -659,7 +704,7 @@ wss.on('connection', (ws) => {
                     const aiPlayer = {
                         id: aiId,
                         name: aiName,
-                        ready: false,
+                        ready: true,
                         isCreator: false,
                         isAI: true
                     };
@@ -763,23 +808,73 @@ wss.on('connection', (ws) => {
                     return;
                 }
 
+                case 'rejoin': {
+                    if (typeof message.lobbyId !== 'string' || !message.lobbyId.length) {
+                        ws.send(JSON.stringify({ action: 'error', message: '请提供大厅名称' }));
+                        return;
+                    }
+                    const rLobby = lobbies.get(message.lobbyId);
+                    if (!rLobby) {
+                        ws.send(JSON.stringify({ action: 'error', message: '大厅不存在或已关闭，单击确认刷新页面' }));
+                        return;
+                    }
+                    const existingPlayer = rLobby.players.find(p => p.disconnected && p.name.toLowerCase() === (message.name || '').toLowerCase());
+                    if (!existingPlayer) {
+                        ws.send(JSON.stringify({ action: 'error', message: '未找到断开连接的玩家，单击确认刷新页面' }));
+                        return;
+                    }
+                    // Reconnect: reassociate WS with existing player
+                    const oldTimer = disconnectTimers.get(existingPlayer.id);
+                    if (oldTimer) clearTimeout(oldTimer);
+                    disconnectTimers.delete(existingPlayer.id);
+                    const retryTimer = reconnectTimers.get(existingPlayer.id);
+                    if (retryTimer) clearTimeout(retryTimer);
+                    reconnectTimers.delete(existingPlayer.id);
+                    existingPlayer.reconnectDeadline = null;
+                    existingPlayer.disconnected = false;
+                    metadata.name = existingPlayer.name;
+                    metadata.lobbyId = message.lobbyId;
+                    metadata.id = existingPlayer.id;
+                    ws.send(JSON.stringify({ action: 'init', id: existingPlayer.id, dev: isDev() }));
+                    broadcastPlayers(message.lobbyId);
+                    if (rLobby.game.started) {
+                        const playerHand = existingPlayer.hand;
+                        ws.send(JSON.stringify({
+                            action: 'start',
+                            id: existingPlayer.id,
+                            players: sanitizePlayersForClient(rLobby.players),
+                            discardPile: rLobby.game.discardPile,
+                            turn: rLobby.game.turn,
+                            hand: playerHand
+                        }));
+                    } else {
+                        ws.send(JSON.stringify({
+                            action: 'players',
+                            players: rLobby.players,
+                            turn: rLobby.game.turn,
+                            lobbyId: message.lobbyId
+                        }));
+                    }
+                    return;
+                }
+
                 case 'play':
                     if (!lobbies.has(metadata.lobbyId)) {
-                        ws.send(JSON.stringify({ action: 'error', message: '游戏房间已不存在，请刷新页面' })); return;
+                        ws.send(JSON.stringify({ action: 'error', message: '游戏房间已不存在，单击确认刷新页面' })); return;
                     }
                     handlePlay(metadata.lobbyId, metadata.id, message.card);
                     return;
 
                 case 'draw':
                     if (!lobbies.has(metadata.lobbyId)) {
-                        ws.send(JSON.stringify({ action: 'error', message: '游戏房间已不存在，请刷新页面' })); return;
+                        ws.send(JSON.stringify({ action: 'error', message: '游戏房间已不存在，单击确认刷新页面' })); return;
                     }
                     handleDraw(metadata.lobbyId, metadata.id);
                     return;
 
                 case 'uno':
                     if (!lobbies.has(metadata.lobbyId)) {
-                        ws.send(JSON.stringify({ action: 'error', message: '游戏房间已不存在，请刷新页面' })); return;
+                        ws.send(JSON.stringify({ action: 'error', message: '游戏房间已不存在，单击确认刷新页面' })); return;
                     }
                     handleUno(metadata.lobbyId, metadata.id);
                     return;
@@ -797,6 +892,19 @@ wss.on('connection', (ws) => {
                     }
                     handleLeave(metadata.lobbyId, metadata.id);
                     return;
+
+                case 'surrender': {
+                    const sLobby = lobbies.get(metadata.lobbyId);
+                    if (!sLobby || !sLobby.game.started) return;
+                    const surrenderPlayer = sLobby.players.find(p => p.id === metadata.id);
+                    if (!surrenderPlayer) return;
+                    const winner = sLobby.players.find(p => p.id !== metadata.id && !p.isAI)
+                        || sLobby.players.find(p => p.id !== metadata.id);
+                    if (winner) {
+                        broadcastWin(metadata.lobbyId, winner.name);
+                    }
+                    return;
+                }
 
                 case 'reaction':
                     const lobby = lobbies.get(metadata.lobbyId);
@@ -921,30 +1029,41 @@ wss.on('connection', (ws) => {
         if (metadata && metadata.lobbyId) {
             const lobby = lobbies.get(metadata.lobbyId);
             if (lobby) {
-                const playerIndex = lobby.players.findIndex(p => p.id === metadata.id);
-                if (playerIndex > -1) {
-                    const player = lobby.players[playerIndex];
-                    lobby.players.splice(playerIndex, 1);
-
-                    if (player && player.isCreator) {
-                        const removedAIs = lobby.players.filter(p => p.isAI);
-                        lobby.players = lobby.players.filter(p => !p.isAI);
-                        for (const ai of removedAIs) clearAITimeout(ai.id);
-                        // Transfer creator to next non-AI player
-                        if (lobby.players.length > 0) {
-                            lobby.players[0].isCreator = true;
-                        }
-                    }
-
-                    checkGameAborted(metadata.lobbyId, metadata.id);
-
+                const player = lobby.players.find(p => p.id === metadata.id);
+                if (player) {
+                    player.disconnected = true;
+                    player.reconnectDeadline = Date.now() + 15000;
                     broadcastPlayers(metadata.lobbyId);
-
-                    checkStartGame(metadata.lobbyId);
-
-                    if (lobby.players.length === 0) {
-                        lobbies.delete(metadata.lobbyId);
+                    if (lobby.game.started) {
+                        broadcastGameUpdate(metadata.lobbyId);
                     }
+                    const reconnectTimer = setTimeout(() => {
+                        reconnectTimers.delete(player.id);
+                        if (player.disconnected && lobby.game.started &&
+                            lobby.game.turn === lobby.players.indexOf(player)) {
+                            lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+                            player.reconnectDeadline = null;
+                            broadcastGameUpdate(metadata.lobbyId);
+                        }
+                    }, 15000);
+                    reconnectTimers.set(player.id, reconnectTimer);
+                    const timer = setTimeout(() => {
+                        disconnectTimers.delete(player.id);
+                        const idx = lobby.players.findIndex(p => p.id === player.id);
+                        if (idx > -1 && lobby.players[idx].disconnected) {
+                            const removed = lobby.players.splice(idx, 1)[0];
+                            if (removed.isCreator) {
+                                const removedAIs = lobby.players.filter(p => p.isAI);
+                                lobby.players = lobby.players.filter(p => !p.isAI);
+                                for (const ai of removedAIs) clearAITimeout(ai.id);
+                                if (lobby.players.length > 0) lobby.players[0].isCreator = true;
+                            }
+                            checkGameAborted(metadata.lobbyId, metadata.id);
+                            broadcastPlayers(metadata.lobbyId);
+                            if (lobby.players.length === 0) lobbies.delete(metadata.lobbyId);
+                        }
+                    }, 30000);
+                    disconnectTimers.set(player.id, timer);
                 }
             }
         }

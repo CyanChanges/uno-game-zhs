@@ -411,6 +411,12 @@ h1 {
     justify-content: center;
 }
 
+#action-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
 #center-area button {
     padding: 12px 24px;
     border: none;
@@ -854,6 +860,10 @@ body.player-action-disabled #center-area {
     pointer-events: none;
     user-select: none;
     -webkit-user-select: none;
+}
+body.player-action-disabled #surrender-btn {
+    pointer-events: auto;
+}
     opacity: 0.6;
 }
 
@@ -1034,7 +1044,9 @@ body.player-action-disabled #player-hand .card {
     white-space: nowrap;
     pointer-events: none;
     z-index: 100;
-    animation: reactionFloatUp 1.5s ease-out forwards;
+    animation-name: reactionFloatUp;
+    animation-timing-function: ease-out;
+    animation-fill-mode: forwards;
     text-shadow: 0 2px 8px rgba(0,0,0,0.5);
 }
 
@@ -1082,6 +1094,18 @@ body.player-action-disabled #player-hand .card {
     color: white;
     transform: translateY(-5px);
     box-shadow: 0 8px 16px rgba(243, 156, 18, 0.3);
+}
+
+#opponent-hands .player.disconnected,
+#players li.disconnected {
+    opacity: 0.4;
+}
+
+#opponent-hands .player.disconnected::after,
+#players li.disconnected .player-name::after {
+    content: '（已断开）';
+    font-size: 0.75rem;
+    color: #f87171;
 }
 
 /* Discard Pile */
@@ -1553,10 +1577,10 @@ footer a {
     font-weight: 600;
     transform: translateY(-100%);
     transition: transform 0.3s ease-out;
-    box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
 }
 #disconnected-toast.visible {
     transform: translateY(0);
+    box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
 }
 
 footer a:hover {

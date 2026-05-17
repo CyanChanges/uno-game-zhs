@@ -13,10 +13,10 @@
     <div id="lobby">
         <h2>加入 UNO Game</h2>
         <div>
-            <input type="text" id="name" placeholder="Enter your name">
+            <input type="text" id="name" placeholder="玩家名称">
         </div>
         <div>
-            <input type="text" id="lobby-id" placeholder="Lobby ID (leave empty for new lobby)">
+            <input type="text" id="lobby-id" placeholder="大厅名称">
         </div>
         <button id="join">加入 (创建)</button>
         <div id="lobby-info" style="display: none;">
@@ -33,7 +33,10 @@
         </div>
         <div id="opponent-hands"></div>
         <div id="center-area">
-            <button id="draw-card">抽牌</button>
+            <div id="action-buttons">
+                <button id="draw-card">抽牌</button>
+                <button id="surrender-btn">认输</button>
+            </div>
             <div id="discard-pile"></div>
             <div id="wild-color-picker" style="display: none;">
                 <h4>选择颜色:</h4>
@@ -94,6 +97,7 @@
             <button class="dev-btn" data-action="dev_remove_cards" data-count="1">-1 牌</button>
             <button class="dev-btn" data-action="dev_remove_cards" data-count="5">-5 牌</button>
             <button class="dev-btn" data-action="dev_skip">跳回合</button>
+            <button class="dev-btn" data-action="dev_disconnect">断开连接</button>
             <button class="dev-btn call-win-btn" data-action="dev_call_win">🏆 胜利</button>
         </div>
     </div>

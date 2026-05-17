@@ -167,7 +167,7 @@ describe('UNO Server', () => {
       const lobby = lobbies.get(lobbyId)
       if (!lobby || !lobby.game.started) return
       const realPlayers = lobby.players.filter(p => !p.isAI)
-      if (lobby.players.length < 2 || realPlayers.length === 0) {
+      if (realPlayers.length === 0) {
         broadcastGameAborted(lobbyId, excludePlayerId)
       }
     }
@@ -227,7 +227,7 @@ describe('UNO Server', () => {
 
     function handleDraw(lobbyId, playerId) {
       const lobby = lobbies.get(lobbyId)
-      if (!lobby) return
+      if (!lobby || !lobby.game.started) return
       const playerIndex = lobby.players.findIndex(p => p.id === playerId)
       if (lobby.game.turn !== playerIndex) return
 
@@ -297,10 +297,39 @@ describe('UNO Server', () => {
             }
             let lobby = findOrCreateLobby(message.lobbyId)
             if (startedLobbies.has(lobby.id)) {
+              const disconnectedPlayer = lobby.players.find(p => p.disconnected && p.name.toLowerCase() === (message.name || '').toLowerCase())
+              if (disconnectedPlayer) {
+                disconnectedPlayer.disconnected = false
+                meta.name = disconnectedPlayer.name
+                meta.lobbyId = message.lobbyId
+                meta.id = disconnectedPlayer.id
+                ws.send(JSON.stringify({ action: 'init', id: disconnectedPlayer.id, dev: false }))
+                broadcastPlayers(message.lobbyId)
+                ws.send(JSON.stringify({
+                  action: 'start',
+                  id: disconnectedPlayer.id,
+                  players: lobby.players.map(p => { const { hand, ...rest } = p; return { ...rest, cardCount: hand ? hand.length : 0 } }),
+                  discardPile: lobby.game.discardPile,
+                  turn: lobby.game.turn,
+                  hand: disconnectedPlayer.hand
+                }))
+                return
+              }
               ws.send(JSON.stringify({ action: 'error', message: '大厅已开始对局, 请使用其他名称' }))
               return
             }
             if (lobby.players.some(p => p.name.toLowerCase() === message.name.toLowerCase())) {
+              const existing = lobby.players.find(p => p.name.toLowerCase() === message.name.toLowerCase())
+              if (existing && existing.disconnected) {
+                existing.disconnected = false
+                existing.reconnectDeadline = null
+                meta.name = existing.name
+                meta.lobbyId = message.lobbyId
+                meta.id = existing.id
+                ws.send(JSON.stringify({ action: 'init', id: existing.id, dev: false }))
+                broadcastPlayers(message.lobbyId)
+                return
+              }
               ws.send(JSON.stringify({ action: 'error', message: '该大厅中已存在同名玩家，请选择其他名称' }))
               return
             }
@@ -326,7 +355,7 @@ describe('UNO Server', () => {
             if (startedLobbies.has(lobby.id)) { ws.send(JSON.stringify({ action: 'error', message: '对局已开始' })); return }
             let idx = 1
             while (lobby.players.some(pl => pl.name === `AI-${idx}`)) idx++
-            lobby.players.push({ id: uuidv4(), name: `AI-${idx}`, ready: false, isCreator: false, isAI: true })
+            lobby.players.push({ id: uuidv4(), name: `AI-${idx}`, ready: true, isCreator: false, isAI: true })
             broadcastPlayers(meta.lobbyId)
             return
           }
@@ -355,12 +384,51 @@ describe('UNO Server', () => {
           case 'play':
             if (!lobbies.has(meta.lobbyId)) { ws.send(JSON.stringify({ action: 'error', message: '房间不存在' })); return }
             handlePlay(meta.lobbyId, meta.id, message.card); return
+          case 'rejoin': {
+            const rLobby = lobbies.get(message.lobbyId)
+            if (!rLobby) { ws.send(JSON.stringify({ action: 'error', message: '大厅不存在' })); return }
+            const player = rLobby.players.find(p => p.disconnected && p.name.toLowerCase() === (message.name || '').toLowerCase())
+            if (!player) { ws.send(JSON.stringify({ action: 'error', message: '未找到断开连接的玩家' })); return }
+            player.disconnected = false
+            meta.name = player.name
+            meta.lobbyId = message.lobbyId
+            meta.id = player.id
+            ws.send(JSON.stringify({ action: 'init', id: player.id, dev: false }))
+            broadcastPlayers(message.lobbyId)
+            if (rLobby.game.started) {
+              ws.send(JSON.stringify({
+                action: 'start',
+                id: player.id,
+                players: (() => {
+                  return rLobby.players.map(p => {
+                    const { hand, ...rest } = p
+                    return { ...rest, cardCount: hand ? hand.length : 0 }
+                  })
+                })(),
+                discardPile: rLobby.game.discardPile,
+                turn: rLobby.game.turn,
+                hand: player.hand
+              }))
+            } else {
+              ws.send(JSON.stringify({ action: 'players', players: rLobby.players, turn: rLobby.game.turn, lobbyId: message.lobbyId }))
+            }
+            return
+          }
           case 'draw':
             if (!lobbies.has(meta.lobbyId)) { ws.send(JSON.stringify({ action: 'error', message: '房间不存在' })); return }
             handleDraw(meta.lobbyId, meta.id); return
           case 'leave':
             if (!lobbies.has(meta.lobbyId)) { ws.send(JSON.stringify({ action: 'error', message: '房间不存在' })); return }
             handleLeave(meta.lobbyId, meta.id); return
+          case 'surrender': {
+            const sLobby = lobbies.get(meta.lobbyId)
+            if (!sLobby || !sLobby.game.started) return
+            const surrenderPlayer = sLobby.players.find(p => p.id === meta.id)
+            if (!surrenderPlayer) return
+            const winner = sLobby.players.find(p => p.id !== meta.id && !p.isAI) || sLobby.players.find(p => p.id !== meta.id)
+            if (winner) broadcastWin(meta.lobbyId, winner.name)
+            return
+          }
           case 'dev_add_cards': {
             const lobby = findOrCreateLobby(meta.lobbyId)
             if (!lobby.game.started) return
@@ -408,13 +476,14 @@ describe('UNO Server', () => {
         if (meta && meta.lobbyId) {
           const lobby = lobbies.get(meta.lobbyId)
           if (lobby) {
-            const idx = lobby.players.findIndex(p => p.id === meta.id)
-            if (idx > -1) {
-              lobby.players.splice(idx, 1)
-              checkGameAborted(meta.lobbyId, meta.id)
+            const player = lobby.players.find(p => p.id === meta.id)
+            if (player) {
+              player.disconnected = true
+              if (lobby.game.turn === lobby.players.indexOf(player)) {
+                lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length
+              }
               broadcastPlayers(meta.lobbyId)
-              checkStartGame(meta.lobbyId)
-              if (lobby.players.length === 0) lobbies.delete(meta.lobbyId)
+              if (lobby.game.started) broadcastGameUpdate(meta.lobbyId)
             }
           }
         }
@@ -869,7 +938,7 @@ describe('UNO Server', () => {
     b.close()
   })
 
-  it('abort game when opponent disconnects', async () => {
+  it('rejoin restores game state after disconnect', async () => {
     const a = await trackedWs(port)
     await a.next()
     send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
@@ -885,13 +954,61 @@ describe('UNO Server', () => {
     send(b.ws, { action: 'ready' }); await a.next(); await b.next()
     await a.next(); await b.next()
 
+    const lobby = lobbiesRef.get('r')
+    const aliceId = lobby.players[0].id
+    const aliceHandSize = lobby.players[0].hand.length
+
+    // Directly mark as disconnected without closing WS
+    lobby.players[0].disconnected = true
+
+    // Rejoin with a fresh connection
+    const a2 = await trackedWs(port)
+    await a2.next() // initial init
+
+    send(a2.ws, { action: 'rejoin', lobbyId: 'r', name: 'Alice' })
+    const rejoinInit = await a2.next()
+    expect(rejoinInit.action).toBe('init')
+    expect(rejoinInit.id).toBe(aliceId)
+
+    await a2.next() // broadcastPlayers
+
+    const rejoinState = await a2.next()
+    expect(rejoinState.action).toBe('start')
+    expect(rejoinState.hand.length).toBe(aliceHandSize)
+    expect(lobby.players.find(p => p.id === aliceId).disconnected).toBe(false)
+    a2.close()
     b.close()
-    const aborted = await a.next()
-    expect(aborted.action).toBe('game_aborted')
+  })
+
+  it('player disconnect marks as disconnected game continues', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    const lobby = lobbiesRef.get('r')
+    b.close()
+    // Alice gets a players broadcast with Bob marked disconnected
+    const update = await a.next()
+    expect(update.action).toBe('players')
+    expect(update.players.length).toBe(2)
+    expect(update.players[1].disconnected).toBe(true)
+    expect(lobby.players[0].disconnected).toBeFalsy()
+    expect(lobby.players[1].disconnected).toBe(true)
     a.close()
   })
 
-  it('abort game when opponent leaves', async () => {
+  it('game does not abort when one real player remains', async () => {
     const a = await trackedWs(port)
     await a.next()
     send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
@@ -908,8 +1025,14 @@ describe('UNO Server', () => {
     await a.next(); await b.next()
 
     send(b.ws, { action: 'leave' })
-    const aborted = await a.next()
-    expect(aborted.action).toBe('game_aborted')
+    // Alice receives players update confirming Bob left
+    const msg = await a.next()
+    expect(msg.action).toBe('players')
+    // Bob left, but Alice still there → game should continue
+    const lobby = lobbiesRef.get('r')
+    expect(lobby.game.started).toBe(true)
+    expect(lobby.players.length).toBe(1)
+    expect(lobby.players[0].name).toBe('Alice')
     a.close()
     b.close()
   })
@@ -941,7 +1064,7 @@ describe('UNO Server', () => {
     c.close()
   })
 
-  it('can rejoin ended lobby', async () => {
+  it('cannot join started lobby after opponent leaves one player remains', async () => {
     const a = await trackedWs(port)
     await a.next()
     send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
@@ -957,21 +1080,19 @@ describe('UNO Server', () => {
     send(b.ws, { action: 'ready' }); await a.next(); await b.next()
     await a.next(); await b.next()
 
-    // Bob leaves -> game aborted
+    // Bob leaves — game continues because Alice is still there
     send(b.ws, { action: 'leave' })
     await a.next()
 
-    // Now new player can join "r" since it's no longer started
+    // New player cannot join the still-running lobby
     const c = await trackedWs(port)
     await c.next()
     send(c.ws, { action: 'join', name: 'Eve', lobbyId: 'r' })
     const msg = await c.next()
-    expect(msg.action).toBe('players')
-    expect(msg.lobbyId).toBe('r')
-    expect(msg.players).toHaveLength(1)
-    a.close()
-    b.close()
+    expect(msg.action).toBe('error')
+    expect(msg.message).toContain('已开始')
     c.close()
+    a.close()
   })
 
   it('reject join should not leak lobbyId to metadata', async () => {
@@ -1042,7 +1163,7 @@ describe('UNO Server', () => {
     expect(msg.players).toHaveLength(2)
     expect(msg.players[1].isAI).toBe(true)
     expect(msg.players[1].name).toMatch(/^AI-/)
-    expect(msg.players[1].ready).toBe(false)
+    expect(msg.players[1].ready).toBe(true) // AI starts ready
     a.close()
   })
 
@@ -1055,11 +1176,12 @@ describe('UNO Server', () => {
     send(a.ws, { action: 'add_ai' })
     const addMsg = await a.next()
     const aiId = addMsg.players[1].id
+    expect(addMsg.players[1].ready).toBe(true) // AI starts ready
 
     send(a.ws, { action: 'ai_ready', playerId: aiId })
     const msg = await a.next()
     expect(msg.players).toHaveLength(2)
-    expect(msg.players[1].ready).toBe(true)
+    expect(msg.players[1].ready).toBe(false) // toggled off
     a.close()
   })
 
@@ -1097,7 +1219,7 @@ describe('UNO Server', () => {
 
     send(a.ws, { action: 'ready' }); await a.next(); await b.next()
     send(b.ws, { action: 'ready' }); await a.next(); await b.next()
-    send(a.ws, { action: 'ai_ready', playerId: aiId }); await a.next(); await b.next()
+    // AI starts ready, game starts immediately after Bob readies
 
     const s1 = await a.next()
     const s2 = await b.next()
@@ -1135,6 +1257,108 @@ describe('UNO Server', () => {
     // No crash should occur.
     const msg = await a.next()
     expect(msg.action).toMatch(/^(players|start)$/)
+    a.close()
+  })
+
+  it('surrender makes opponent win', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    send(a.ws, { action: 'surrender' })
+    const aWin = await a.next()
+    expect(aWin.action).toBe('win')
+    expect(aWin.winner).toBe('Bob')
+
+    const bWin = await b.next()
+    expect(bWin.action).toBe('win')
+    expect(bWin.winner).toBe('Bob')
+    a.close()
+    b.close()
+  })
+
+  it('surrender works regardless of whose turn', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    // It's Bob's turn (1), Alice surrenders anyway — still works
+    send(a.ws, { action: 'surrender' })
+    const aWin = await a.next()
+    expect(aWin.action).toBe('win')
+    expect(aWin.winner).toBe('Bob')
+    a.close()
+    b.close()
+  })
+
+  it('surrender clears lobby so rejoin fails', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    send(a.ws, { action: 'surrender' })
+    await a.next()
+    await b.next()
+
+    // After surrender, lobby is cleaned up — joining should create a fresh lobby
+    const c = await trackedWs(port)
+    await c.next()
+    send(c.ws, { action: 'join', name: 'Charlie', lobbyId: 'r' })
+    const msg = await c.next()
+    expect(msg.action).toBe('players')
+    expect(msg.players).toHaveLength(1)
+    expect(msg.players[0].name).toBe('Charlie')
+    a.close()
+    b.close()
+    c.close()
+  })
+
+  it('surrender ignored when game not started', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    // Sending surrender before game starts should not crash
+    send(a.ws, { action: 'surrender' })
+    // Connection persists — send join again to verify
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    const msg = await a.next()
+    // May be players or error (name taken)
+    expect(msg.action).toMatch(/^(players|error)$/)
     a.close()
   })
 })

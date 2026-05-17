@@ -38,6 +38,8 @@ joinFormContainer.id = 'join-form-container';
 
 let isDisconnected = false;
 let disconnectToastTimeout = null;
+let wasInGame = false;
+let countdownInterval = null;
 
 function encodeUGC(content) {
     const tempEl = document.createElement('div');
@@ -101,6 +103,11 @@ function connect() {
         console.log('Connected to server');
         isDisconnected = false;
         hideDisconnectedToast();
+        const savedLobbyId = localStorage.getItem('unoLobbyId');
+        const savedName = localStorage.getItem('unoPlayerName');
+        if (savedLobbyId && savedName && wasInGame) {
+            sendMessage({ action: 'rejoin', lobbyId: savedLobbyId, name: savedName });
+        }
     };
 
     ws.onmessage = (event) => {
@@ -115,6 +122,10 @@ function connect() {
 
         if (message.action === 'error') {
             showAlert(message.message).then(() => {
+                if (message.message.includes('请刷新页面') || message.message.includes('刷新页面')) {
+                    location.reload();
+                    return;
+                }
                 nameInput.disabled = false;
                 lobbyIdInput.disabled = false;
                 joinButton.disabled = false;
@@ -134,7 +145,7 @@ function connect() {
 
         if (message.action === 'start') {
             myId = message.id;
-            console.log('[start] myId =', myId, 'players =', message.players.map(p => ({ id: p.id, name: p.name })), 'turn =', message.turn);
+            wasInGame = true;            console.log('[start] myId =', myId, 'players =', message.players.map(p => ({ id: p.id, name: p.name })), 'turn =', message.turn);
             lobbyDiv.style.display = 'none';
             gameDiv.style.display = 'block';
             players = message.players;
@@ -267,6 +278,8 @@ function attemptRejoin() {
 }
 
 function resetGameState() {
+    wasInGame = false;
+    if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
     // Reset to lobby
     lobbyDiv.style.display = 'block';
     gameDiv.style.display = 'none';
@@ -305,6 +318,9 @@ function resetGameState() {
         // // Clear localStorage
         // localStorage.removeItem('unoLobbyId');
         // localStorage.removeItem('unoPlayerName');
+
+        // fix all problem
+        location.reload()
     })
 }
 
@@ -332,12 +348,20 @@ function updatePlayers(players, turn) {
             playerDiv.classList.add('ai');
         }
 
+        if (player.disconnected) {
+            playerDiv.classList.add('disconnected');
+        }
+
         let displayText = player.name;
         if (player.isCreator) {
             displayText += ' 👑';
         }
         if (player.isAI) {
             displayText += ' 🤖';
+        }
+        if (player.disconnected && player.reconnectDeadline) {
+            const remaining = Math.max(0, Math.ceil((player.reconnectDeadline - Date.now()) / 1000));
+            displayText += ` · 重连中 ${remaining}s`;
         }
 
         // `textContent` is safe
@@ -356,6 +380,7 @@ function updatePlayers(players, turn) {
         li.classList.add('player-row');
         if (player.isCreator) li.classList.add('creator');
         if (player.isAI) li.classList.add('ai');
+        if (player.disconnected) li.classList.add('disconnected');
 
         const nameSpan = document.createElement('span');
         nameSpan.classList.add('player-name');
@@ -363,6 +388,10 @@ function updatePlayers(players, turn) {
         if (player.isCreator) nameText += ' 👑';
         if (player.isAI) nameText += ' 🤖';
         if (player.ready) nameText += '（已准备）';
+        if (player.disconnected && player.reconnectDeadline) {
+            const remaining = Math.max(0, Math.ceil((player.reconnectDeadline - Date.now()) / 1000));
+            nameText += ` · 重连中 ${remaining}s`;
+        }
         nameSpan.textContent = nameText;
         if (i === turn) nameSpan.style.fontWeight = 'bold';
         li.appendChild(nameSpan);
@@ -413,6 +442,14 @@ function updatePlayers(players, turn) {
     }
     if (readyButton && me) {
         readyButton.textContent = me.ready ? '取消' : '就绪';
+    }
+
+    const hasDeadline = players.some(p => p.disconnected && p.reconnectDeadline);
+    if (hasDeadline && !countdownInterval) {
+        countdownInterval = setInterval(() => updatePlayers(players, turn), 1000);
+    } else if (!hasDeadline && countdownInterval) {
+        clearInterval(countdownInterval);
+        countdownInterval = null;
     }
 }
 
@@ -719,6 +756,16 @@ drawCardButton.addEventListener('click', () => {
     sendMessage({ action: 'draw' });
 });
 
+const surrenderBtn = document.getElementById('surrender-btn');
+if (surrenderBtn) {
+    surrenderBtn.addEventListener('click', async () => {
+        const confirmed = await showConfirm('确定要认输吗？');
+        if (confirmed) {
+            sendMessage({ action: 'surrender' });
+        }
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     connect();
     attemptRejoin();
@@ -921,6 +968,7 @@ let isGameOverShowing = false;
 function showGameOver(winnerName) {
     if (isGameOverShowing) return;
     isGameOverShowing = true;
+    wasInGame = false;
 
     const isWinner = winnerName === players.find(p => p.id === myId)?.name;
     const myName = localStorage.getItem('unoPlayerName') || '';
@@ -945,6 +993,7 @@ function showGameOver(winnerName) {
 function showGameAborted() {
     if (isGameOverShowing) return;
     isGameOverShowing = true;
+    wasInGame = false;
 
     gameOverIcon.textContent = '⚡';
     gameOverTitle.textContent = '对局中止';
@@ -964,6 +1013,14 @@ function showReaction(playerId, type, content) {
     if (type === 'text') popup.classList.add('reaction-popup-text');
     popup.textContent = content;
 
+    let width = 0;
+    for (const ch of content) {
+        if (/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch)) width += 1;
+        else width += 0.3;
+    }
+    const duration = Math.max(1.5, Math.min(5, 1 + width * 0.1));
+    popup.style.animationDuration = duration + 's';
+
     if (playerDiv) {
         playerDiv.appendChild(popup);
     } else {
@@ -974,7 +1031,6 @@ function showReaction(playerId, type, content) {
             popup.style.bottom = '100%';
             popup.style.left = '50%';
             popup.style.transform = 'translateX(-50%)';
-            popup.style.animation = 'reactionFloatUp 1.5s ease-out forwards';
             reactionBar.appendChild(popup);
         }
     }
@@ -1039,6 +1095,13 @@ function setupDevPanel() {
         if (!btn) return;
 
         const action = btn.dataset.action;
+        if (action === 'dev_disconnect') {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close(4001, 'dev disconnect');
+            }
+            return;
+        }
+
         const count = btn.dataset.count ? parseInt(btn.dataset.count) : undefined;
 
         const msg = { action };
