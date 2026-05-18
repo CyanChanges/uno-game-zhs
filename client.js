@@ -829,7 +829,7 @@ function copyLobbyId() {
 }
 
 function applyCardLayout() {
-    if (localStorage.getItem('unoCardLayout') === 'scroll') {
+    if (localStorage.getItem('unoCardLayout') !== 'wrap') {
         playerHandDiv.classList.add('scroll-mode');
         cardLayoutToggle.textContent = '切换到换行排列';
     } else {
