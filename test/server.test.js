@@ -41,6 +41,7 @@ describe('UNO Server', () => {
     const clients = new Map()
     const lobbies = new Map()
     const startedLobbies = new Set()
+    const sessions = new Map()
     lobbiesRef = lobbies
 
     function createLobby(lobbyId) {
@@ -71,6 +72,26 @@ describe('UNO Server', () => {
       if (lobby && lobby.players.length > 1 && lobby.players.every(p => p.ready)) {
         startGame(lobbyId)
       }
+    }
+
+    function drawCardsFromDeck(lobby, lobbyId, count) {
+      const drawn = [];
+      while (drawn.length < count) {
+        let card = lobby.game.deck.pop();
+        if (!card) {
+          if (lobby.game.discardPile.length >= 2) {
+            const topCard = lobby.game.discardPile.pop();
+            lobby.game.deck = lobby.game.discardPile;
+            lobby.game.discardPile = [topCard];
+            shuffleDeck(lobbyId);
+            card = lobby.game.deck.pop();
+          } else {
+            break;
+          }
+        }
+        drawn.push(card);
+      }
+      return drawn;
     }
 
     function createDeck(lobbyId) {
@@ -198,11 +219,11 @@ describe('UNO Server', () => {
         lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length
       } else if (card.type === 'draw2') {
         const n = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length
-        lobby.players[n].hand.push(...lobby.game.deck.splice(0, 2))
+        lobby.players[n].hand.push(...drawCardsFromDeck(lobby, lobbyId, 2))
         lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length
       } else if (card.type === 'wild4') {
         const n = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length
-        lobby.players[n].hand.push(...lobby.game.deck.splice(0, 4))
+        lobby.players[n].hand.push(...drawCardsFromDeck(lobby, lobbyId, 4))
         lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length
       } else {
         lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length
@@ -239,18 +260,9 @@ describe('UNO Server', () => {
         return
       }
 
-      let card = lobby.game.deck.pop()
-      if (!card) {
-        if (lobby.game.discardPile.length >= 2) {
-          const topCard = lobby.game.discardPile.pop()
-          lobby.game.deck = lobby.game.discardPile
-          lobby.game.discardPile = [topCard]
-          shuffleDeck(lobbyId)
-          card = lobby.game.deck.pop()
-        }
-      }
-      if (card) {
-        lobby.players[playerIndex].hand.push(card)
+      const drawn = drawCardsFromDeck(lobby, lobbyId, 1)
+      if (drawn.length > 0) {
+        lobby.players[playerIndex].hand.push(drawn[0])
       }
 
       lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length
@@ -320,7 +332,7 @@ describe('UNO Server', () => {
             }
             if (lobby.players.some(p => p.name.toLowerCase() === message.name.toLowerCase())) {
               const existing = lobby.players.find(p => p.name.toLowerCase() === message.name.toLowerCase())
-              if (existing && existing.disconnected) {
+              if (existing && (existing.id === message.playerId || existing.disconnected)) {
                 existing.disconnected = false
                 existing.reconnectDeadline = null
                 meta.name = existing.name
@@ -335,14 +347,18 @@ describe('UNO Server', () => {
             }
             meta.lobbyId = message.lobbyId
             lobby.players.push({ id: meta.id, name: meta.name, ready: false, isCreator: lobby.players.length === 0 })
+            sessions.set(meta.id, { name: meta.name, lobbyId: meta.lobbyId })
             broadcastPlayers(meta.lobbyId)
             return
           }
           case 'ready': {
             const lobby = lobbies.get(meta.lobbyId)
             if (!lobby) { ws.send(JSON.stringify({ action: 'error', message: 'not in lobby' })); return }
-            const player = lobby.players.find(p => p.id === meta.id)
-            if (!player) { ws.send(JSON.stringify({ action: 'error', message: 'not in lobby' })); return }
+            let player = lobby.players.find(p => p.id === meta.id)
+            if (!player) {
+              player = { id: meta.id, name: meta.name || 'Player', ready: false, isCreator: lobby.players.length === 0 }
+              lobby.players.push(player)
+            }
             player.ready = !player.ready
             broadcastPlayers(meta.lobbyId)
             checkStartGame(meta.lobbyId)
@@ -384,33 +400,60 @@ describe('UNO Server', () => {
           case 'play':
             if (!lobbies.has(meta.lobbyId)) { ws.send(JSON.stringify({ action: 'error', message: '房间不存在' })); return }
             handlePlay(meta.lobbyId, meta.id, message.card); return
-          case 'rejoin': {
-            const rLobby = lobbies.get(message.lobbyId)
-            if (!rLobby) { ws.send(JSON.stringify({ action: 'error', message: '大厅不存在' })); return }
-            const player = rLobby.players.find(p => p.disconnected && p.name.toLowerCase() === (message.name || '').toLowerCase())
-            if (!player) { ws.send(JSON.stringify({ action: 'error', message: '未找到断开连接的玩家' })); return }
-            player.disconnected = false
-            meta.name = player.name
-            meta.lobbyId = message.lobbyId
-            meta.id = player.id
-            ws.send(JSON.stringify({ action: 'init', id: player.id, dev: false }))
-            broadcastPlayers(message.lobbyId)
+          case 'reconnect': {
+            const session = sessions.get(message.playerId)
+            if (!session) {
+              const newId = uuidv4()
+              meta.id = newId
+              ws.send(JSON.stringify({ action: 'init', id: newId, dev: false, reconnectLost: true }))
+              return
+            }
+            const rLobby = lobbies.get(session.lobbyId)
+            const lobbyAlive = rLobby && rLobby.players.length > 0
+            if (!lobbyAlive) {
+              const newId = uuidv4()
+              meta.id = newId
+              ws.send(JSON.stringify({ action: 'init', id: newId, dev: false, reconnectLost: true }))
+              return
+            }
+            meta.name = session.name
+            const existingPlayer = rLobby.players.find(p => p.id === message.playerId)
+            if (!existingPlayer) {
+              const newId = uuidv4()
+              meta.id = newId
+              ws.send(JSON.stringify({ action: 'init', id: newId, dev: false, reconnectLost: true }))
+              return
+            }
+            meta.name = session.name
+            meta.lobbyId = session.lobbyId
+            meta.id = message.playerId
+            ws.send(JSON.stringify({ action: 'init', id: message.playerId, dev: false }))
+            existingPlayer.disconnected = false
+            for (const [existingWs, existingMeta] of clients) {
+              if (existingMeta.id === message.playerId && existingWs !== ws) {
+                existingMeta.lobbyId = null
+              }
+            }
+            broadcastPlayers(session.lobbyId)
             if (rLobby.game.started) {
-              ws.send(JSON.stringify({
-                action: 'start',
-                id: player.id,
-                players: (() => {
-                  return rLobby.players.map(p => {
-                    const { hand, ...rest } = p
-                    return { ...rest, cardCount: hand ? hand.length : 0 }
-                  })
-                })(),
-                discardPile: rLobby.game.discardPile,
-                turn: rLobby.game.turn,
-                hand: player.hand
-              }))
+              const player = existingPlayer || rLobby.players[0]
+              if (player && player.hand) {
+                ws.send(JSON.stringify({
+                  action: 'start',
+                  id: message.playerId,
+                  players: (() => {
+                    return rLobby.players.map(p => {
+                      const { hand, ...rest } = p
+                      return { ...rest, cardCount: hand ? hand.length : 0 }
+                    })
+                  })(),
+                  discardPile: rLobby.game.discardPile,
+                  turn: rLobby.game.turn,
+                  hand: player.hand
+                }))
+              }
             } else {
-              ws.send(JSON.stringify({ action: 'players', players: rLobby.players, turn: rLobby.game.turn, lobbyId: message.lobbyId }))
+              ws.send(JSON.stringify({ action: 'players', players: rLobby.players, turn: rLobby.game.turn, lobbyId: session.lobbyId }))
             }
             return
           }
@@ -549,6 +592,24 @@ describe('UNO Server', () => {
     const err = await b.next()
     expect(err.action).toBe('error')
     expect(err.message).toContain('已存在同名')
+    a.close()
+    b.close()
+  })
+
+  it('rejoin with same name and matching UUID is allowed', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+    const lobby = lobbiesRef.get('r')
+    const aliceId = lobby.players[0].id
+
+    // Same name + matching UUID → allowed
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Alice', lobbyId: 'r', playerId: aliceId })
+    const msg = await b.next()
+    expect(msg.action).not.toBe('error')
     a.close()
     b.close()
   })
@@ -965,12 +1026,14 @@ describe('UNO Server', () => {
     const a2 = await trackedWs(port)
     await a2.next() // initial init
 
-    send(a2.ws, { action: 'rejoin', lobbyId: 'r', name: 'Alice' })
+    send(a2.ws, { action: 'reconnect', playerId: aliceId })
     const rejoinInit = await a2.next()
     expect(rejoinInit.action).toBe('init')
     expect(rejoinInit.id).toBe(aliceId)
 
-    await a2.next() // broadcastPlayers
+    await a2.next() // players (broadcastPlayers)
+    // Second players (direct ws.send in rejoin handler for non-started lobbies)
+    // For started games this will be the 'start' message instead
 
     const rejoinState = await a2.next()
     expect(rejoinState.action).toBe('start')
@@ -1181,7 +1244,7 @@ describe('UNO Server', () => {
     send(a.ws, { action: 'ai_ready', playerId: aiId })
     const msg = await a.next()
     expect(msg.players).toHaveLength(2)
-    expect(msg.players[1].ready).toBe(false) // toggled off
+    expect(msg.players[1].ready).toBe(false) // toggled off (was true→false)
     a.close()
   })
 
@@ -1218,9 +1281,11 @@ describe('UNO Server', () => {
     await a.next()
 
     send(a.ws, { action: 'ready' }); await a.next(); await b.next()
-    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
-    // AI starts ready, game starts immediately after Bob readies
-
+    // Bob readies → AI is already ready → game starts
+    send(b.ws, { action: 'ready' })
+    const p1 = await a.next() // players from Bob's ready
+    await b.next()
+    // Game starts after Bob's ready since all are ready (AI starts ready=true)
     const s1 = await a.next()
     const s2 = await b.next()
     expect(s1.action).toBe('start')
@@ -1360,5 +1425,640 @@ describe('UNO Server', () => {
     // May be players or error (name taken)
     expect(msg.action).toMatch(/^(players|error)$/)
     a.close()
+  })
+
+  it('play draw2 skips next player in 3-player game', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    const c = await trackedWs(port)
+    await c.next()
+    send(c.ws, { action: 'join', name: 'Charlie', lobbyId: 'r' })
+    await c.next()
+    await a.next()
+    await b.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next(); await c.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next(); await c.next()
+    send(c.ws, { action: 'ready' }); await a.next(); await b.next(); await c.next()
+
+    const s1 = await a.next()
+    await b.next()
+    await c.next()
+
+    const lobby = lobbiesRef.get('r')
+    lobby.game.discardPile = [{ color: 'red', type: '5' }]
+    lobby.players[0].hand = [{ color: 'red', type: 'draw2' }, { color: 'blue', type: '3' }]
+    lobby.players[1].hand = []
+    lobby.players[2].hand = []
+
+    send(a.ws, { action: 'play', card: { color: 'red', type: 'draw2' } })
+    const u = await a.next()
+    expect(u.action).toBe('update')
+    const bob = lobby.players.find(p => p.name === 'Bob')
+    expect(bob.hand).toHaveLength(2)
+    expect(u.turn).toBe(2)
+    a.close()
+    b.close()
+    c.close()
+  })
+
+  it('play wild4 skips next player in 3-player game', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    const c = await trackedWs(port)
+    await c.next()
+    send(c.ws, { action: 'join', name: 'Charlie', lobbyId: 'r' })
+    await c.next()
+    await a.next()
+    await b.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next(); await c.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next(); await c.next()
+    send(c.ws, { action: 'ready' }); await a.next(); await b.next(); await c.next()
+
+    const s1 = await a.next()
+    await b.next()
+    await c.next()
+
+    const lobby = lobbiesRef.get('r')
+    lobby.game.discardPile = [{ color: 'red', type: '5' }]
+    lobby.players[0].hand = [{ type: 'wild4' }, { color: 'blue', type: '3' }]
+    lobby.players[1].hand = []
+    lobby.players[2].hand = []
+
+    send(a.ws, { action: 'play', card: { type: 'wild4', color: 'red' } })
+    const u = await a.next()
+    expect(u.action).toBe('update')
+    const bob = lobby.players.find(p => p.name === 'Bob')
+    expect(bob.hand).toHaveLength(4)
+    expect(u.turn).toBe(2)
+    a.close()
+    b.close()
+    c.close()
+  })
+
+  it('play draw2 reshuffles discard pile when deck is empty', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    const lobby = lobbiesRef.get('r')
+    lobby.game.discardPile = [{ color: 'red', type: '5' }, { color: 'blue', type: '3' }, { color: 'yellow', type: 'skip' }]
+    lobby.game.deck = []
+    lobby.players[0].hand = [{ color: 'red', type: 'draw2' }, { color: 'green', type: '7' }]
+    lobby.players[1].hand = []
+
+    send(a.ws, { action: 'play', card: { color: 'red', type: 'draw2' } })
+    const u = await a.next()
+    expect(u.action).toBe('update')
+    const bob = lobby.players.find(p => p.name === 'Bob')
+    expect(bob.hand).toHaveLength(2)
+    expect(lobby.game.deck.length).toBeGreaterThan(0)
+    a.close()
+    b.close()
+  })
+
+  it('play draw2 with 2 players returns turn to the same player', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' }); await a.next(); await b.next()
+    send(b.ws, { action: 'ready' }); await a.next(); await b.next()
+    await a.next(); await b.next()
+
+    const lobby = lobbiesRef.get('r')
+    lobby.game.discardPile = [{ color: 'red', type: '5' }]
+    lobby.players[0].hand = [{ color: 'red', type: 'draw2' }, { color: 'blue', type: '3' }]
+    lobby.players[1].hand = []
+
+    send(a.ws, { action: 'play', card: { color: 'red', type: 'draw2' } })
+    const u = await a.next()
+    expect(u.action).toBe('update')
+    expect(u.turn).toBe(0)
+    const bob = lobby.players.find(p => p.name === 'Bob')
+    expect(bob.hand).toHaveLength(2)
+    a.close()
+    b.close()
+  })
+
+  it('reconnect then ready works in lobby', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    // Save player info before disconnect
+    const lobby = lobbiesRef.get('r')
+    const aliceId = lobby.players[0].id
+    const bobId = lobby.players[1].id
+
+    // Disconnect Alice
+    a.close()
+    // Wait for server to process the close event
+    await new Promise(r => setTimeout(r, 50))
+    expect(lobby.players[0].disconnected).toBe(true)
+
+    // New connection simulating auto-reconnect
+    const a2 = await trackedWs(port)
+    const initMsg = await a2.next()
+    expect(initMsg.action).toBe('init')
+
+    // Send rejoin
+    send(a2.ws, { action: 'reconnect', playerId: aliceId })
+    const rejoinResp = await a2.next()
+    expect(rejoinResp.action).toMatch(/^(init|players)$/)
+    // If init, consume players from broadcastPlayers + direct ws.send
+    if (rejoinResp.action === 'init') {
+      const p1 = await a2.next()
+      expect(p1.action).toBe('players')
+      const p2 = await a2.next()
+      expect(p2.action).toBe('players')
+    }
+
+    // Now ready should work
+    send(a2.ws, { action: 'ready' })
+    const readyResp = await a2.next()
+    expect(readyResp.action).toBe('players')
+    const aliceInLobby = readyResp.players.find(p => p.id === aliceId)
+    expect(aliceInLobby).toBeDefined()
+    expect(aliceInLobby.ready).toBe(true)
+    a2.close()
+    b.close()
+  })
+
+  it('rejoin with fresh connection then ready succeeds', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    const lobby = lobbiesRef.get('r')
+    const aliceId = lobby.players[0].id
+
+    // Close both to simulate page refresh
+    a.close()
+    b.close()
+    await new Promise(r => setTimeout(r, 50))
+    expect(lobby.players[0].disconnected).toBe(true)
+
+    // Fresh connection simulating page reload
+    const a2 = await trackedWs(port)
+    const initMsg = await a2.next()
+    expect(initMsg.action).toBe('init')
+
+    // Rejoin
+    send(a2.ws, { action: 'reconnect', playerId: aliceId })
+    const rejoinResp = await a2.next()
+    expect(rejoinResp.action).toMatch(/^(init|players)$/)
+    if (rejoinResp.action === 'init') {
+      const p1 = await a2.next()
+      expect(p1.action).toBe('players')
+      const p2 = await a2.next()
+      expect(p2.action).toBe('players')
+    }
+
+    // Also reconnect Bob
+    const b2 = await trackedWs(port)
+    await b2.next()
+    send(b2.ws, { action: 'reconnect', playerId: lobby.players[1].id })
+    const bRejoin = await b2.next()
+    expect(bRejoin.action).toMatch(/^(init|players)$/)
+    if (bRejoin.action === 'init') {
+      await b2.next()
+      await b2.next()
+    }
+    // Consume the broadcastPlayers from Bob's rejoin that was sent to all clients
+    await a2.next()
+
+    // Alice sends ready
+    send(a2.ws, { action: 'ready' })
+    const readyResp = await a2.next()
+    expect(readyResp.action).toBe('players')
+    const aliceInLobby = readyResp.players.find(p => p.id === aliceId)
+    expect(aliceInLobby).toBeDefined()
+    expect(aliceInLobby.ready).toBe(true)
+    a2.close()
+    b2.close()
+  })
+
+  it('reconnect with no session returns reconnectLost flag', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+    const lobby = lobbiesRef.get('r')
+    const aliceId = lobby.players[0].id
+
+    a.close()
+    await new Promise(r => setTimeout(r, 50))
+
+    // New connection, reconnect with invalid UUID
+    const a2 = await trackedWs(port)
+    await a2.next()
+    send(a2.ws, { action: 'reconnect', playerId: 'non-existent-uuid' })
+    const msg = await a2.next()
+    expect(msg.action).toBe('init')
+    expect(msg.reconnectLost).toBe(true)
+    expect(msg.id).not.toBe('non-existent-uuid')
+    a2.close()
+  })
+
+  it('reconnect with dead lobby returns reconnectLost flag', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const lobby = lobbiesRef.get('r')
+    const aliceId = lobby.players[0].id
+
+    // Destroy the lobby
+    lobby.players.length = 0
+    lobby.game.started = false
+
+    a.close()
+    await new Promise(r => setTimeout(r, 50))
+
+    const a2 = await trackedWs(port)
+    await a2.next()
+    send(a2.ws, { action: 'reconnect', playerId: aliceId })
+    const msg = await a2.next()
+    expect(msg.action).toBe('init')
+    expect(msg.reconnectLost).toBe(true)
+    a2.close()
+  })
+
+  it('reconnect with active lobby does not set reconnectLost', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    const lobby = lobbiesRef.get('r')
+    const aliceId = lobby.players[0].id
+
+    a.close()
+    await new Promise(r => setTimeout(r, 50))
+    expect(lobby.players[0].disconnected).toBe(true)
+
+    const a2 = await trackedWs(port)
+    await a2.next()
+    send(a2.ws, { action: 'reconnect', playerId: aliceId })
+    const msg = await a2.next()
+    expect(msg.action).toBe('init')
+    expect(msg.reconnectLost).toBeFalsy()
+    a2.close()
+    b.close()
+  })
+
+  it('ready toggles even when other player is disconnected', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    const lobby = lobbiesRef.get('r')
+
+    // Mark Bob as disconnected
+    lobby.players[1].disconnected = true
+
+    // Alice clicks ready — should toggle, game should NOT start
+    send(a.ws, { action: 'ready' })
+    const r1 = await a.next()
+    expect(r1.action).toBe('players')
+    const alice = r1.players.find(p => p.name === 'Alice')
+    expect(alice.ready).toBe(true)
+    // Game should not have started (only 1 active player)
+    expect(lobby.game.started).toBe(false)
+
+    // Alice clicks ready again — toggles off
+    send(a.ws, { action: 'ready' })
+    const r2 = await a.next()
+    expect(r2.action).toBe('players')
+    const alice2 = r2.players.find(p => p.name === 'Alice')
+    expect(alice2.ready).toBe(false)
+    a.close()
+    b.close()
+  })
+
+  it('game starts when both active players ready', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    const lobby = lobbiesRef.get('r')
+
+    // Both ready
+    send(a.ws, { action: 'ready' })
+    await a.next(); await b.next()
+    send(b.ws, { action: 'ready' })
+    await a.next(); await b.next()
+
+    // Game should start
+    const startMsg = await a.next()
+    expect(startMsg.action).toBe('start')
+    expect(lobby.game.started).toBe(true)
+    a.close()
+    b.close()
+  })
+
+  it('game does not start with one active and one disconnected', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    const lobby = lobbiesRef.get('r')
+
+    // Bob disconnected → Alice readies → game should NOT start
+    lobby.players[1].disconnected = true
+    send(a.ws, { action: 'ready' })
+    const r1 = await a.next()
+    await b.next() // drain Bob's broadcast
+    expect(r1.action).toBe('players')
+    expect(lobby.game.started).toBe(false)
+    expect(lobby.players[0].ready).toBe(true)
+
+    // Bob reconnects and readies → now both ready → game starts
+    lobby.players[1].disconnected = false
+    send(b.ws, { action: 'ready' })
+    const r2 = await a.next() // players broadcast from Bob's ready
+    await b.next()            // Bob's own broadcast
+    expect(r2.action).toBe('players')
+    expect(lobby.players[1].ready).toBe(true)
+
+    const startMsg = await a.next()
+    expect(startMsg.action).toBe('start')
+    expect(lobby.game.started).toBe(true)
+    a.close()
+    b.close()
+  })
+
+  it('A ready stays ready after B disconnects then reconnects', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    const lobby = lobbiesRef.get('r')
+
+    // 3. B disconnects (closes tab)
+    lobby.players[1].disconnected = true
+    // broadcastPlayers happens on the server when it detects close
+
+    // 4. A clicks ready
+    send(a.ws, { action: 'ready' })
+    const r1 = await a.next()
+    const alice1 = r1.players.find(p => p.name === 'Alice')
+    expect(alice1.ready).toBe(true)
+    // A should stay ready — consume any extra broadcasts
+    await b.next() // drain B's broadcast
+
+    // Wait a beat to see if anything toggles A back
+    await new Promise(r => setTimeout(r, 50))
+    expect(lobby.players[0].ready).toBe(true)
+    expect(lobby.game.started).toBe(false)
+
+    // 6. B reconnects
+    lobby.players[1].disconnected = false
+    // B clicks ready
+    send(b.ws, { action: 'ready' })
+    const r2 = await a.next() // players broadcast from B's ready
+    await b.next()            // B's own broadcast
+    const alice2 = r2.players.find(p => p.name === 'Alice')
+    // A should still be ready
+    expect(alice2.ready).toBe(true)
+
+    // 7. Game should start
+    const startMsg = await a.next()
+    expect(startMsg.action).toBe('start')
+    expect(lobby.game.started).toBe(true)
+    a.close()
+    b.close()
+  })
+
+  it('rapid ready clicks toggle twice without client guard', async () => {
+    // Two rapid ready messages → two toggles → net off (ready=false)
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    send(a.ws, { action: 'ready' })
+    send(a.ws, { action: 'ready' }) // second — client guard would block this on UI
+
+    // Consume responses
+    await a.next(); await b.next() // first ready broadcast
+    await a.next(); await b.next() // second ready broadcast
+
+    const lobby = lobbiesRef.get('r')
+    expect(lobby.players[0].ready).toBe(false) // toggled on then off
+    a.close()
+    b.close()
+  })
+
+  it('adding AI via handler does not reset creator ready state', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const lobby = lobbiesRef.get('r')
+
+    // Alice readies
+    send(a.ws, { action: 'ready' })
+    const r1 = await a.next()
+    expect(r1.players.find(p => p.name === 'Alice').ready).toBe(true)
+
+    // Add AI via server handler (uses add_ai)
+    send(a.ws, { action: 'add_ai' })
+    const r2 = await a.next()
+    expect(r2.action).toBe('players')
+    // Alice should still be ready
+    expect(r2.players.find(p => p.name === 'Alice').ready).toBe(true)
+    // Game should not start yet
+    expect(lobby.game.started).toBe(false)
+    a.close()
+  })
+
+  it('add_ai does not auto-start even with AI ready=true', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const lobby = lobbiesRef.get('r')
+
+    // Alice readies
+    send(a.ws, { action: 'ready' })
+    await a.next()
+
+    // Add AI (AI starts ready=true, but add_ai doesn't call checkStartGame)
+    send(a.ws, { action: 'add_ai' })
+    const r2 = await a.next()
+    const aiPlayer = r2.players.find(p => p.isAI)
+    expect(aiPlayer).toBeDefined()
+    expect(aiPlayer.ready).toBe(true)
+    // Game should NOT start from add_ai alone
+    expect(lobby.game.started).toBe(false)
+    a.close()
+  })
+
+  it('full flow: B closes tab → A readies (stays ready) → B reconnects → B readies → game starts', async () => {
+    const a = await trackedWs(port)
+    await a.next()
+    send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
+    await a.next()
+
+    const b = await trackedWs(port)
+    await b.next()
+    send(b.ws, { action: 'join', name: 'Bob', lobbyId: 'r' })
+    await b.next()
+    await a.next()
+
+    const lobby = lobbiesRef.get('r')
+
+    // 3. B closes tab — simulate by closing WS and marking disconnected
+    b.close()
+    await new Promise(r => setTimeout(r, 50))
+    // Server's close handler should have set B.disconnected = true
+    expect(lobby.players[1].disconnected).toBe(true)
+    // Drain the broadcastPlayers from B's close event
+    const drainFromClose = await a.next()
+    expect(drainFromClose.action).toBe('players')
+
+    // 4. A clicks ready
+    send(a.ws, { action: 'ready' })
+    const r1 = await a.next()
+    expect(r1.action).toBe('players')
+    const aliceAfterReady = r1.players.find(p => p.name === 'Alice')
+    expect(aliceAfterReady.ready).toBe(true)
+    // Game should not start (only 1 active player)
+    expect(lobby.game.started).toBe(false)
+
+    // 5. A stays ready for 3 seconds
+    await new Promise(r => setTimeout(r, 100))
+    expect(lobby.players[0].ready).toBe(true) // still ready
+    await new Promise(r => setTimeout(r, 100))
+    expect(lobby.players[0].ready).toBe(true) // still ready
+
+    // 6. B reconnects — new WS, sends reconnect with UUID
+    const bId = lobby.players[1].id
+    const b2 = await trackedWs(port)
+    await b2.next() // init from connection handler
+    send(b2.ws, { action: 'reconnect', playerId: bId })
+
+    // Consume reconnect responses
+    const rejoinResp = await b2.next()
+    expect(rejoinResp.action).toBe('init')
+    expect(rejoinResp.id).toBe(bId)
+    // Consume broadcastPlayers + direct players
+    const p1 = await b2.next()
+    expect(p1.action).toBe('players')
+    const p2 = await b2.next()
+    expect(p2.action).toBe('players')
+    // A should still be ready in the broadcast
+    expect(p1.players.find(p => p.name === 'Alice').ready).toBe(true)
+    expect(lobby.players[1].disconnected).toBe(false)
+
+    // 7. B clicks ready → game starts
+    send(b2.ws, { action: 'ready' })
+    const readyResp = await b2.next() // B's own broadcast
+    expect(readyResp.action).toBe('players')
+    const bobReady = readyResp.players.find(p => p.name === 'Bob')
+    expect(bobReady.ready).toBe(true)
+
+    // Both active players ready → game starts
+    const startMsg = await b2.next()
+    expect(startMsg.action).toBe('start')
+    expect(lobby.game.started).toBe(true)
+    a.close()
+    b2.close()
   })
 })

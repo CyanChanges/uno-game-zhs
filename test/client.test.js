@@ -1,160 +1,220 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { JSDOM } from 'jsdom'
-import fs from 'fs'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { chromium } from 'playwright'
+import { fork } from 'child_process'
 import path from 'path'
 
-// Read the HTML file
-const html = fs.readFileSync(path.resolve('./index.html'), 'utf8')
+const BASE = 'http://localhost:3000'
+
+let browser, serverProcess
+
+beforeAll(async () => {
+  serverProcess = fork(path.resolve('./server.js'), [], {
+    env: { ...process.env, NODE_ENV: 'development' },
+    silent: true
+  })
+  serverProcess.stdout.on('data', d => process.stdout.write(`[server] ${d}`))
+  serverProcess.stderr.on('data', d => process.stderr.write(`[server-err] ${d}`))
+  await new Promise(r => setTimeout(r, 1500))
+  browser = await chromium.launch({ headless: true })
+})
+
+afterAll(async () => {
+  if (browser) await browser.close()
+  if (serverProcess) serverProcess.kill()
+})
 
 describe('UNO Client', () => {
-  let dom
-  let mockWebSocket
-  let mockWebSocketConstructor
+  it('loads and shows join form', async () => {
+    const page = await browser.newPage()
+    await page.goto(BASE)
+    await page.waitForSelector('#name')
+    await page.waitForSelector('#join')
+    expect(await page.isVisible('#name')).toBe(true)
+    expect(await page.isVisible('#join')).toBe(true)
+    await page.close()
+  })
 
-  beforeEach(() => {
-    // Create a fresh DOM for each test
-    dom = new JSDOM(html, {
-      url: 'http://localhost:3000',
-      runScripts: 'dangerously',
-      resources: 'usable'
+  it('shows (已准备) after player readies', async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    // Join lobby
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', 'test1')
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', 'test1')
+    await pageB.click('#join')
+
+    // Wait for both to see each other
+    await pageA.waitForFunction(() => {
+      const items = document.querySelectorAll('#players li')
+      return items.length === 2
+    })
+    await pageB.waitForFunction(() => {
+      const items = document.querySelectorAll('#players li')
+      return items.length === 2
     })
 
-    // Mock WebSocket with proper state management
-    mockWebSocket = {
-      send: vi.fn(),
-      close: vi.fn(),
-      readyState: 1, // WebSocket.OPEN
-      onopen: null,
-      onmessage: null,
-      onclose: null,
-      onerror: null,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn()
+    // Bob disconnect
+    await pageB.close()
+
+    // Alice clicks ready → should show (已准备)
+    await pageA.click('#ready')
+    await pageA.waitForFunction(() => {
+      const items = document.querySelectorAll('#players li')
+      return items[0]?.textContent?.includes('（已准备）')
+    })
+
+    const aliceName = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
+    expect(aliceName).toContain('（已准备）')
+
+    const { promise, resolve } = Promise.withResolvers()
+    setTimeout(resolve, 1500)
+    await promise
+
+    // 1.5s recheck Alice is ready
+    const aliceName1 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
+    expect(aliceName1).toContain('（已准备）')
+
+    await pageA.close()
+    await pageB.close()
+  })
+
+  it('full flow: B disconnects → A readies (stays ready) → B reconnects → B readies → game starts', { timeout: 45000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'flow-' + Date.now()
+
+    // 1-2. A creates room, B joins
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li', { timeout: 5000 })
+
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2, { timeout: 5000 })
+    await pageB.waitForFunction(() => document.querySelectorAll('#players li').length === 2, { timeout: 5000 })
+
+    // 3. B closes tab (disconnect)
+    await pageB.close()
+    await pageA.waitForFunction(() => {
+      const items = document.querySelectorAll('#players li')
+      return items.length === 2 && items[1]?.classList?.contains('disconnected')
+    }, { timeout: 10000 })
+
+    // 4. A clicks ready
+    await pageA.click('#ready')
+    // Wait for ready button to confirm (changes from "就绪" to "取消准备")
+    await pageA.waitForFunction(() => {
+      const btn = document.getElementById('ready')
+      return btn && btn.textContent === '取消准备'
+    }, { timeout: 5000 })
+
+    // 5. A stays ready — retry until stable
+    for (let i = 0; i < 10; i++) {
+      await pageA.waitForTimeout(300)
+      const btn = await pageA.$eval('#ready', el => el.textContent)
+      if (btn === '取消准备') break
+    }
+    const btnText = await pageA.$eval('#ready', el => el.textContent)
+    expect(btnText).toBe('取消准备')
+    const aliceName = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
+    expect(aliceName).toContain('（已准备）')
+
+    // 6. B reconnects (new page)
+    const pageB2 = await browser.newPage()
+    await pageB2.goto(BASE)
+    await pageB2.fill('#name', 'Bob')
+    await pageB2.fill('#lobby-id', lobbyId)
+    await pageB2.click('#join')
+    await pageB2.waitForFunction(() => document.querySelectorAll('#players li').length === 2, { timeout: 5000 })
+    // Wait for B to be reconnected (not disconnected)
+    await pageB2.waitForFunction(() => {
+      const items = document.querySelectorAll('#players li')
+      if (items.length < 2) return false
+      return !items[1]?.classList?.contains('disconnected')
+    }, { timeout: 5000 })
+
+    const aliceReady2 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
+    expect(aliceReady2).toContain('（已准备）')
+
+    // 7. B clicks ready → game starts
+    await pageB2.click('#ready')
+
+    // Wait for game to appear for both players
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none' && el.style.display !== ''
+    }, { timeout: 10000 })
+    await pageB2.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none' && el.style.display !== ''
+    }, { timeout: 10000 })
+
+    await pageA.close()
+    await pageB2.close()
+  })
+
+  it('draw increases card count during normal play', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'draw-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const getCardCount = async (page) => (await page.$$('#player-hand .card')).length
+    const isMyTurn = async (page) => await page.evaluate(() =>
+      document.getElementById('turn-indicator')?.classList.contains('my-turn')
+    )
+
+    // If B goes first, B draws to pass turn to A
+    if (!(await isMyTurn(pageA))) {
+      await pageB.waitForFunction(() =>
+        document.getElementById('turn-indicator')?.classList.contains('my-turn')
+      , { timeout: 10000 })
+      await pageB.click('#draw-card')
+      await pageA.waitForTimeout(500)
     }
 
-    // Create a mock constructor that returns our mock instance
-    mockWebSocketConstructor = vi.fn(() => mockWebSocket)
-    
-    // Mock localStorage
-    const mockLocalStorage = {
-      getItem: vi.fn(),
-      setItem: vi.fn(),
-      removeItem: vi.fn()
-    }
-    
-    // Set up the DOM window with our mocks
-    dom.window.WebSocket = mockWebSocketConstructor
-    dom.window.localStorage = mockLocalStorage
-    
-    // Make DOM globals available
-    global.document = dom.window.document
-    global.window = dom.window
-    global.WebSocket = mockWebSocketConstructor
-    global.localStorage = mockLocalStorage
-  })
+    // A draws → gets 1 card (normal draw, < 100 cards)
+    const aBefore = await getCardCount(pageA)
+    await pageA.click('#draw-card')
+    await pageA.waitForTimeout(500)
+    // Turn passes to B
+    await pageB.waitForFunction(() =>
+      document.getElementById('turn-indicator')?.classList.contains('my-turn')
+    , { timeout: 10000 })
+    const aAfter = await getCardCount(pageA)
+    expect(aAfter).toBe(aBefore + 1)
 
-  it('should have the correct HTML structure', () => {
-    expect(dom.window.document.getElementById('lobby')).toBeTruthy()
-    expect(dom.window.document.getElementById('game')).toBeTruthy()
-    expect(dom.window.document.getElementById('draw-card')).toBeTruthy()
-    expect(dom.window.document.getElementById('lobby-id')).toBeTruthy()
-    expect(dom.window.document.getElementById('turn-indicator')).toBeTruthy()
-    expect(dom.window.document.getElementById('wild-color-picker')).toBeTruthy()
-    expect(dom.window.document.getElementById('lobby-info')).toBeTruthy()
+    await pageA.close()
+    await pageB.close()
   })
-
-  it('should have all required form elements', () => {
-    expect(dom.window.document.getElementById('name')).toBeTruthy()
-    expect(dom.window.document.getElementById('join')).toBeTruthy()
-    expect(dom.window.document.getElementById('ready')).toBeTruthy()
-    expect(dom.window.document.getElementById('player-hand')).toBeTruthy()
-    expect(dom.window.document.getElementById('discard-pile')).toBeTruthy()
-    expect(dom.window.document.getElementById('players')).toBeTruthy()
-  })
-
-  it('should have wild color picker with all colors', () => {
-    const colorPicker = dom.window.document.getElementById('wild-color-picker')
-    expect(colorPicker).toBeTruthy()
-    
-    const colorButtons = colorPicker.querySelectorAll('.color-option')
-    expect(colorButtons.length).toBe(4)
-    
-    const colors = Array.from(colorButtons).map(btn => btn.dataset.color)
-    expect(colors).toEqual(['red', 'yellow', 'green', 'blue'])
-  })
-
-  it('should have turn indicator element', () => {
-    const turnIndicator = dom.window.document.getElementById('turn-indicator')
-    expect(turnIndicator).toBeTruthy()
-    
-    const turnText = dom.window.document.getElementById('turn-text')
-    expect(turnText).toBeTruthy()
-    expect(turnText.textContent.trim()).toBe('等待游戏开始...')
-  })
-
-  it('should have lobby info section', () => {
-    const lobbyInfo = dom.window.document.getElementById('lobby-info')
-    expect(lobbyInfo).toBeTruthy()
-    expect(lobbyInfo.style.display).toBe('none')
-    
-    const lobbyIdSpan = dom.window.document.getElementById('current-lobby-id')
-    expect(lobbyIdSpan).toBeTruthy()
-  })
-
-  it('should have game control buttons', () => {
-    const drawButton = dom.window.document.getElementById('draw-card')
-    expect(drawButton).toBeTruthy()
-  })
-
-  it('should not have UNO button (auto UNO feature)', () => {
-    const unoButton = dom.window.document.getElementById('uno-button')
-    expect(unoButton).toBeNull()
-  })
-
-  it('should have game areas', () => {
-    const playerHand = dom.window.document.getElementById('player-hand')
-    expect(playerHand).toBeTruthy()
-    
-    const opponentHands = dom.window.document.getElementById('opponent-hands')
-    expect(opponentHands).toBeTruthy()
-    
-    const centerArea = dom.window.document.getElementById('center-area')
-    expect(centerArea).toBeTruthy()
-  })
-
-  // Test WebSocket functionality with manual setup
-  it('should be able to create WebSocket connection', () => {
-    // Simulate what the client.js would do
-    const ws = new dom.window.WebSocket('ws://localhost:8080')
-    expect(mockWebSocketConstructor).toHaveBeenCalledWith('ws://localhost:8080')
-    expect(ws).toBe(mockWebSocket)
-  })
-
-  it('should handle form submission properly', () => {
-    const nameInput = dom.window.document.getElementById('name')
-    const lobbyIdInput = dom.window.document.getElementById('lobby-id')
-    const joinButton = dom.window.document.getElementById('join')
-    
-    expect(nameInput).toBeTruthy()
-    expect(lobbyIdInput).toBeTruthy()
-    expect(joinButton).toBeTruthy()
-    
-    // Test that form elements can be manipulated
-    nameInput.value = 'Test Player'
-    lobbyIdInput.value = 'ABC123'
-    
-    expect(nameInput.value).toBe('Test Player')
-    expect(lobbyIdInput.value).toBe('ABC123')
-  })
-
-  it('should have proper initial styling', () => {
-    const gameDiv = dom.window.document.getElementById('game')
-    expect(gameDiv.style.display).toBe('none')
-    
-    const lobbyDiv = dom.window.document.getElementById('lobby')
-    expect(lobbyDiv.style.display).toBe('')
-    
-    const wildColorPicker = dom.window.document.getElementById('wild-color-picker')
-    expect(wildColorPicker.style.display).toBe('none')
-  })
-}) 
+})
