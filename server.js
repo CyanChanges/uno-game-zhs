@@ -50,6 +50,34 @@ const startedLobbies = new Set();
 const aiTimeouts = new Map();
 const disconnectTimers = new Map(); // playerId -> timeout for reconnect grace period
 const reconnectTimers = new Map(); // playerId -> timeout for 15s turn skip
+const sessions = new Map(); // playerId -> { name, lobbyId } for reconnection
+const deferTimers = new Map(); // playerId/lobbyId -> timeout for deferred close processing
+
+let stateLog = [];
+function logState(event, metadata, details = {}) {
+    if (!isDev()) return;
+    stateLog.push({
+        t: Date.now(),
+        event,
+        playerId: metadata?.id?.slice(0,8),
+        lobbyId: metadata?.lobbyId?.slice(0,8),
+        name: metadata?.name,
+        ...details
+    });
+    if (stateLog.length > 10000) stateLog.splice(0, 1000);
+}
+
+function validateState(playerId, name, lobbyId) {
+    // Check if the player's current state is consistent
+    if (!lobbyId) return 'disconnected';
+    const lobby = lobbies.get(lobbyId);
+    if (!lobby) return 'disconnected';
+    const player = lobby.players.find(p => p.id === playerId);
+    if (!player) return 'disconnected';
+    if (player.disconnected) return 'reconnecting';
+    if (lobby.game.started) return 'in_game';
+    return 'in_lobby';
+}
 
 function createLobby(lobbyId) {
     return {
@@ -100,7 +128,10 @@ function broadcastPlayers(lobbyId) {
 
 function checkStartGame(lobbyId) {
     const lobby = lobbies.get(lobbyId);
-    if (lobby.players.length > 1 && lobby.players.every(p => p.ready)) {
+    if (!lobby) return;
+    const activePlayers = lobby.players.filter(p => !p.disconnected);
+    console.log(`[server] checkStartGame lobby=${lobbyId?.slice(0,8)} total=${lobby.players.length} active=${activePlayers.length} activeReady=${activePlayers.filter(p=>p.ready).length}`);
+    if (lobby.players.length >= 2 && activePlayers.length >= 2 && activePlayers.every(p => p.ready)) {
         startGame(lobbyId);
     }
 }
@@ -139,6 +170,26 @@ function shuffleDeck(lobbyId) {
     }
 }
 
+function drawCardsFromDeck(lobby, lobbyId, count) {
+    const drawn = [];
+    while (drawn.length < count) {
+        let card = lobby.game.deck.pop();
+        if (!card) {
+            if (lobby.game.discardPile.length >= 2) {
+                const topCard = lobby.game.discardPile.pop();
+                lobby.game.deck = lobby.game.discardPile;
+                lobby.game.discardPile = [topCard];
+                shuffleDeck(lobbyId);
+                card = lobby.game.deck.pop();
+            } else {
+                break;
+            }
+        }
+        drawn.push(card);
+    }
+    return drawn;
+}
+
 function dealCards(lobbyId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
@@ -152,6 +203,8 @@ function dealCards(lobbyId) {
 function startGame(lobbyId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
+    const activePlayers = lobby.players.filter(p => !p.disconnected);
+    if (activePlayers.length < 2) return;
 
     lobby.game.started = true;
     startedLobbies.add(lobbyId);
@@ -192,29 +245,13 @@ function broadcastWin(lobbyId, winnerName) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
 
-    const message = {
-        action: 'win',
-        winner: winnerName
-    };
-    broadcastToLobby(lobbyId, message);
+    broadcastToLobby(lobbyId, { action: 'win', winner: winnerName });
 
-    // Clear lobbyId from all clients so stale metadata doesn't cause cross-tab interference
-    [...clients.keys()].forEach((client) => {
-        const metadata = clients.get(client);
-        if (metadata.lobbyId === lobbyId) {
-            metadata.lobbyId = null;
-        }
-    });
-
-    clearAllAITimeouts(lobbyId);
-
-    // Reset game state completely
+    for (const [, meta] of clients) {
+        if (meta.lobbyId === lobbyId) meta.lobbyId = null;
+    }
     lobby.players.length = 0;
-    lobby.game.deck = [];
-    lobby.game.discardPile = [];
-    lobby.game.turn = 0;
-    lobby.game.direction = 1;
-    lobby.game.started = false;
+    lobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false };
     startedLobbies.delete(lobbyId);
 }
 
@@ -222,28 +259,13 @@ function broadcastGameAborted(lobbyId, excludePlayerId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
 
-    const message = {
-        action: 'game_aborted'
-    };
-    broadcastToLobby(lobbyId, message, excludePlayerId);
+    broadcastToLobby(lobbyId, { action: 'game_aborted' }, excludePlayerId);
 
-    // Clear lobbyId from remaining clients so they're fully out of the lobby
-    [...clients.keys()].forEach((client) => {
-        const metadata = clients.get(client);
-        if (metadata.lobbyId === lobbyId && metadata.id !== excludePlayerId) {
-            metadata.lobbyId = null;
-        }
-    });
-
-    clearAllAITimeouts(lobbyId);
-
-    // Fully clean up lobby — players are gone, just like broadcastWin
+    for (const [client, meta] of clients) {
+        if (meta.lobbyId === lobbyId && meta.id !== excludePlayerId) meta.lobbyId = null;
+    }
     lobby.players = [];
-    lobby.game.deck = [];
-    lobby.game.discardPile = [];
-    lobby.game.turn = 0;
-    lobby.game.direction = 1;
-    lobby.game.started = false;
+    lobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false };
     startedLobbies.delete(lobbyId);
 }
 
@@ -251,7 +273,7 @@ function checkGameAborted(lobbyId, excludePlayerId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby || !lobby.game.started) return;
     const realPlayers = lobby.players.filter(p => !p.isAI);
-    if (realPlayers.length === 0) {
+    if (realPlayers.length <= 1) {
         broadcastGameAborted(lobbyId, excludePlayerId);
     }
 }
@@ -367,13 +389,13 @@ function handlePlayMultiple(lobbyId, playerId, cards) {
         // Next player draws 2 cards per card played
         const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
         const nextPlayer = lobby.players[nextPlayerIndex];
-        nextPlayer.hand.push(...lobby.game.deck.splice(0, 2 * cardCount));
+        nextPlayer.hand.push(...drawCardsFromDeck(lobby, lobbyId, 2 * cardCount));
         lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
     } else if (lastCard.type === 'wild4') {
         // Next player draws 4 cards per wild+4 played
         const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
         const nextPlayer = lobby.players[nextPlayerIndex];
-        nextPlayer.hand.push(...lobby.game.deck.splice(0, 4 * cardCount));
+        nextPlayer.hand.push(...drawCardsFromDeck(lobby, lobbyId, 4 * cardCount));
         lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
     } else {
         // Regular cards or wild cards
@@ -424,14 +446,14 @@ function handlePlay(lobbyId, playerId, card) {
         } else if (card.type === 'draw2') {
             const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
             const nextPlayer = lobby.players[nextPlayerIndex];
-            nextPlayer.hand.push(...lobby.game.deck.splice(0, 2));
+            nextPlayer.hand.push(...drawCardsFromDeck(lobby, lobbyId, 2));
             lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
         } else if (card.type === 'wild' || card.type === 'wild4') {
             // Color will be chosen by the client
             if (card.type === 'wild4') {
                 const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
                 const nextPlayer = lobby.players[nextPlayerIndex];
-                nextPlayer.hand.push(...lobby.game.deck.splice(0, 4));
+                nextPlayer.hand.push(...drawCardsFromDeck(lobby, lobbyId, 4));
                 lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
             } else {
                 lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
@@ -460,25 +482,9 @@ function handleDraw(lobbyId, playerId) {
 
     const player = lobby.players[playerIndex];
 
-    // Players with >= 100 cards skip drawing
-    if (player.hand.length >= 100) {
-        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
-        broadcastGameUpdate(lobbyId);
-        return;
-    }
-
-    let card = lobby.game.deck.pop();
-    if (!card) {
-        if (lobby.game.discardPile.length >= 2) {
-            const topCard = lobby.game.discardPile.pop();
-            lobby.game.deck = lobby.game.discardPile;
-            lobby.game.discardPile = [topCard];
-            shuffleDeck(lobbyId);
-            card = lobby.game.deck.pop();
-        }
-    }
-    if (card) {
-        player.hand.push(card);
+    const drawn = drawCardsFromDeck(lobby, lobbyId, 1);
+    if (drawn.length > 0) {
+        player.hand.push(drawn[0]);
     }
     lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
     broadcastGameUpdate(lobbyId);
@@ -572,10 +578,13 @@ function uuidv4() {
     });
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
     const id = uuidv4();
     const metadata = { id };
     clients.set(ws, metadata);
+
+    // Fallback: auto-reconnect via saved ID from localStorage
+    // (client sends reconnect or join via onopen handler)
 
     ws.send(JSON.stringify({ action: 'init', dev: isDev(), id }))
     console.log('client connected', id)
@@ -585,14 +594,18 @@ wss.on('connection', (ws) => {
         try {
             message = JSON.parse(messageAsString);
         } catch (e) {
-            // ws.send(JSON.stringify({
-            //     action: 'error',
-            //     message: '非法请求'
-            // }));
-            ws.close(1002, '非法请求数据')
             return;
         }
+
         const metadata = clients.get(ws);
+        logState('msg', metadata, { action: message.action });
+        if (metadata && metadata.lobbyId && message.action !== 'reconnect' && message.action !== 'join') {
+            const state = validateState(metadata.id, metadata.name, metadata.lobbyId);
+            if (state === 'disconnected') {
+                console.log(`[server] state mismatch: player ${metadata.id?.slice(0,8)} is ${state}, resetting lobbyId`);
+                metadata.lobbyId = null;
+            }
+        }
 
         if (!(message.action || '').startsWith('dev_')) {
             switch (message.action) {
@@ -644,7 +657,7 @@ wss.on('connection', (ws) => {
                     // 检查重名
                     const existingPlayer = lobby.players.find(p => p.name.toLowerCase() === message.name.toLowerCase());
                     if (existingPlayer) {
-                        if (existingPlayer.disconnected && existingPlayer.id === message.playerId) {
+                        if (existingPlayer.id === message.playerId || existingPlayer.disconnected) {
                             const oldTimer = disconnectTimers.get(existingPlayer.id);
                             if (oldTimer) clearTimeout(oldTimer);
                             disconnectTimers.delete(existingPlayer.id);
@@ -653,6 +666,9 @@ wss.on('connection', (ws) => {
                             reconnectTimers.delete(existingPlayer.id);
                             existingPlayer.reconnectDeadline = null;
                             existingPlayer.disconnected = false;
+                            const dfk = existingPlayer.id;
+                            const dft = deferTimers.get(dfk);
+                            if (dft) { clearTimeout(dft); deferTimers.delete(dfk); }
                             metadata.name = existingPlayer.name;
                             metadata.lobbyId = message.lobbyId;
                             metadata.id = existingPlayer.id;
@@ -677,6 +693,7 @@ wss.on('connection', (ws) => {
                         isCreator: isCreator
                     }
                     lobby.players.push(player);
+                    sessions.set(metadata.id, { name: metadata.name, lobbyId: metadata.lobbyId });
                     broadcastPlayers(metadata.lobbyId);
                     console.log('player jointed to', lobby.id, ':', player)
                     return;
@@ -779,7 +796,7 @@ wss.on('connection', (ws) => {
                         return;
                     }
                     const to = lobby.players.find(p => p.id === message.playerId);
-                    if (!to || to.isAI) {
+                    if (!to || to.isAI || to.disconnected) {
                         ws.send(JSON.stringify({
                             action: 'error',
                             message: '目标玩家无效'
@@ -793,37 +810,61 @@ wss.on('connection', (ws) => {
                 }
 
                 case 'ready': {
-                    const lobby = findOrCreateLobby(metadata.lobbyId);
-                    const player = lobby.players.find(p => p.id === metadata.id);
-                    if (!player) {
-                        ws.send(JSON.stringify({
-                            action: 'error',
-                            message: '只有在加入大厅后才能准备'
-                        }));
+                    const lobby = lobbies.get(metadata.lobbyId);
+                    if (!lobby) {
+                        ws.send(JSON.stringify({ action: 'error', message: '未加入大厅' }));
                         return;
                     }
+                    let player = lobby.players.find(p => p.id === metadata.id);
+                    if (!player) {
+                        player = { id: metadata.id, name: metadata.name || 'Player', ready: false, isCreator: lobby.players.length === 0 };
+                        lobby.players.push(player);
+                    }
+                    const oldReady = player.ready;
                     player.ready = !player.ready;
+                    console.log(`[server] ready TOGGLE player=${player.name} ${oldReady}→${player.ready} metadata.lobbyId=${metadata.lobbyId?.slice(0,8)} playerId=${metadata.id?.slice(0,8)}`);
+                    logState('ready', metadata, { player: player.name, ready: player.ready, allPlayers: lobby.players.map(p => ({name:p.name,ready:p.ready,disconnected:p.disconnected})) });
+                    sessions.set(player.id, { ...sessions.get(player.id), pendingReady: player.ready });
                     broadcastPlayers(metadata.lobbyId);
                     checkStartGame(metadata.lobbyId);
                     return;
                 }
 
-                case 'rejoin': {
-                    if (typeof message.lobbyId !== 'string' || !message.lobbyId.length) {
-                        ws.send(JSON.stringify({ action: 'error', message: '请提供大厅名称' }));
+                case 'reconnect': {
+                    const session = sessions.get(message.playerId);
+                    logState('reconnect', metadata, { session: !!session, playerId: message.playerId?.slice(0,8) });
+                    if (!session) {
+                        const newId = uuidv4();
+                        metadata.id = newId;
+                        ws.send(JSON.stringify({ action: 'init', id: newId, dev: isDev(), reconnectLost: true }));
                         return;
                     }
-                    const rLobby = lobbies.get(message.lobbyId);
-                    if (!rLobby) {
-                        ws.send(JSON.stringify({ action: 'error', message: '大厅不存在或已关闭，单击确认刷新页面' }));
+                    const rLobby = lobbies.get(session.lobbyId);
+                    const lobbyAlive = rLobby && rLobby.players.length > 0;
+                    logState('reconnect_lobby', metadata, { alive: lobbyAlive, started: rLobby?.game?.started, players: rLobby?.players?.length });
+                    if (!lobbyAlive) {
+                        // Lobby is gone or empty (game ended). Don't restore context.
+                        // Client will show join form. Session stays for future reconnects.
+                        const newId = uuidv4();
+                        metadata.id = newId;
+                        console.log(`[server] reconnect lobby dead, new session newId=${newId.slice(0,8)}, keeping old session=${message.playerId.slice(0,8)}`);
+                        ws.send(JSON.stringify({ action: 'init', id: newId, dev: isDev(), reconnectLost: true }));
                         return;
                     }
-                    const existingPlayer = rLobby.players.find(p => p.disconnected && p.id === message.playerId && p.name.toLowerCase() === (message.name || '').toLowerCase());
+                    const existingPlayer = rLobby.players.find(p => p.id === message.playerId);
+                    console.log(`[server] reconnect existingPlayer=${!!existingPlayer} disconnected=${existingPlayer?.disconnected} ready=${existingPlayer?.ready}`);
                     if (!existingPlayer) {
-                        ws.send(JSON.stringify({ action: 'error', message: '未找到断开连接的玩家，单击确认刷新页面' }));
+                        // Player was removed from lobby (30s timeout, game ended, etc.)
+                        // Don't restore context — send reconnectLost
+                        const newId = uuidv4();
+                        metadata.id = newId;
+                        ws.send(JSON.stringify({ action: 'init', id: newId, dev: isDev(), reconnectLost: true }));
                         return;
                     }
-                    // Reconnect: reassociate WS with existing player
+                    metadata.name = session.name;
+                    metadata.lobbyId = session.lobbyId;
+                    metadata.id = message.playerId;
+                    ws.send(JSON.stringify({ action: 'init', id: message.playerId, dev: isDev() }));
                     const oldTimer = disconnectTimers.get(existingPlayer.id);
                     if (oldTimer) clearTimeout(oldTimer);
                     disconnectTimers.delete(existingPlayer.id);
@@ -832,27 +873,43 @@ wss.on('connection', (ws) => {
                     reconnectTimers.delete(existingPlayer.id);
                     existingPlayer.reconnectDeadline = null;
                     existingPlayer.disconnected = false;
-                    metadata.name = existingPlayer.name;
-                    metadata.lobbyId = message.lobbyId;
-                    metadata.id = existingPlayer.id;
-                    ws.send(JSON.stringify({ action: 'init', id: existingPlayer.id, dev: isDev() }));
-                    broadcastPlayers(message.lobbyId);
+                    // Cancel any deferred close processing for this player
+                    const deferKey = existingPlayer.id;
+                    const deferTimer = deferTimers.get(deferKey);
+                    if (deferTimer) { clearTimeout(deferTimer); deferTimers.delete(deferKey); }
+                    // Restore pending ready from session (survives WS closure)
+                    const pending = sessions.get(existingPlayer.id);
+                    if (pending && pending.pendingReady !== undefined) {
+                        existingPlayer.ready = pending.pendingReady;
+                        console.log(`[server] reconnect restored ready=${existingPlayer.ready} for ${existingPlayer.name}`);
+                    } else {
+                        console.log(`[server] reconnect NO pendingReady for ${existingPlayer.name}, current ready=${existingPlayer.ready}`);
+                    }
+                    // Suppress old WS close handler
+                    for (const [existingWs, existingMeta] of clients) {
+                        if (existingMeta.id === message.playerId && existingWs !== ws) {
+                            existingMeta.lobbyId = null;
+                        }
+                    }
+                    broadcastPlayers(session.lobbyId);
                     if (rLobby.game.started) {
-                        const playerHand = existingPlayer.hand;
-                        ws.send(JSON.stringify({
-                            action: 'start',
-                            id: existingPlayer.id,
-                            players: sanitizePlayersForClient(rLobby.players),
-                            discardPile: rLobby.game.discardPile,
-                            turn: rLobby.game.turn,
-                            hand: playerHand
-                        }));
+                        const player = existingPlayer || rLobby.players[0];
+                        if (player && player.hand) {
+                            ws.send(JSON.stringify({
+                                action: 'start',
+                                id: message.playerId,
+                                players: sanitizePlayersForClient(rLobby.players),
+                                discardPile: rLobby.game.discardPile,
+                                turn: rLobby.game.turn,
+                                hand: player.hand
+                            }));
+                        }
                     } else {
                         ws.send(JSON.stringify({
                             action: 'players',
                             players: rLobby.players,
                             turn: rLobby.game.turn,
-                            lobbyId: message.lobbyId
+                            lobbyId: session.lobbyId
                         }));
                     }
                     return;
@@ -1003,7 +1060,8 @@ wss.on('connection', (ws) => {
                     const player3 = lobby3.players.find(p => p.id === metadata.id);
                     if (!player3) { ws.send(JSON.stringify({ action: 'error', message: '玩家ID未找到' })); return; }
                     const removeCount = Math.min(message.count || 1, player3.hand.length);
-                    player3.hand.splice(0, removeCount);
+                    const removed = player3.hand.splice(0, removeCount);
+                    lobby3.game.discardPile.push(...removed);
                     if (player3.hand.length === 0) {
                         broadcastWin(metadata.lobbyId, player3.name);
                     } else {
@@ -1018,6 +1076,11 @@ wss.on('connection', (ws) => {
                     broadcastGameUpdate(metadata.lobbyId);
                     return;
                 }
+                case 'dev_export_state': {
+                    logState('export', metadata);
+                    ws.send(JSON.stringify({ action: 'dev_state_export', log: stateLog }));
+                    return;
+                }
                 default:
                     console.warn('unhandled dev event', message)
             }
@@ -1026,52 +1089,84 @@ wss.on('connection', (ws) => {
 
     ws.on('close', () => {
         const metadata = clients.get(ws);
+        logState('close', metadata);
         if (metadata && metadata.lobbyId) {
-            const lobby = lobbies.get(metadata.lobbyId);
-            if (lobby) {
-                const player = lobby.players.find(p => p.id === metadata.id);
-                if (player) {
-                    player.disconnected = true;
-                    player.reconnectDeadline = Date.now() + 15000;
-                    broadcastPlayers(metadata.lobbyId);
-                    if (lobby.game.started) {
-                        broadcastGameUpdate(metadata.lobbyId);
-                    }
-                    const reconnectTimer = setTimeout(() => {
-                        reconnectTimers.delete(player.id);
-                        if (player.disconnected && lobby.game.started &&
-                            lobby.game.turn === lobby.players.indexOf(player)) {
-                            lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
-                            player.reconnectDeadline = null;
-                            broadcastGameUpdate(metadata.lobbyId);
-                        }
-                    }, 15000);
-                    reconnectTimers.set(player.id, reconnectTimer);
-                    const timer = setTimeout(() => {
-                        disconnectTimers.delete(player.id);
-                        const idx = lobby.players.findIndex(p => p.id === player.id);
-                        if (idx > -1 && lobby.players[idx].disconnected) {
-                            const removed = lobby.players.splice(idx, 1)[0];
-                            if (removed.isCreator) {
-                                const removedAIs = lobby.players.filter(p => p.isAI);
-                                lobby.players = lobby.players.filter(p => !p.isAI);
-                                for (const ai of removedAIs) clearAITimeout(ai.id);
-                                if (lobby.players.length > 0) lobby.players[0].isCreator = true;
-                            }
-                            checkGameAborted(metadata.lobbyId, metadata.id);
-                            broadcastPlayers(metadata.lobbyId);
-                            if (lobby.players.length === 0) lobbies.delete(metadata.lobbyId);
-                        }
-                    }, 30000);
-                    disconnectTimers.set(player.id, timer);
-                }
-            }
+            const player = lobbies.get(metadata.lobbyId)?.players.find(p => p.id === metadata.id);
+            if (player) player.disconnected = true;
+            scheduleProcessClose(metadata.id, ws, metadata);
         }
-
-        console.log('client disconnected', metadata.id);
         clients.delete(ws);
     });
 });
+
+function scheduleProcessClose(playerId, ws, metadata) {
+    const deferKey = playerId || (metadata && metadata.lobbyId);
+    if (!deferKey) return processClose(ws, metadata);
+    const existing = deferTimers.get(deferKey);
+    if (existing) clearTimeout(existing);
+    const deferTimer = setTimeout(() => {
+        deferTimers.delete(deferKey);
+        processClose(ws, metadata);
+    }, 500);
+    deferTimers.set(deferKey, deferTimer);
+}
+
+function processClose(ws, metadata) {
+    const lobby = lobbies.get(metadata.lobbyId);
+    if (!lobby) return;
+    const player = lobby.players.find(p => p.id === metadata.id);
+    if (!player) return;
+    player.disconnected = true;
+    player.reconnectDeadline = Date.now() + 15000;
+    broadcastPlayers(metadata.lobbyId);
+    if (lobby.game.started) {
+        broadcastGameUpdate(metadata.lobbyId);
+    }
+    const reconnectTimer = setTimeout(() => {
+        reconnectTimers.delete(player.id);
+        if (!player.disconnected) return;
+        // Skip this player's turn if it's their turn
+        if (lobby.game.started &&
+            lobby.game.turn === lobby.players.indexOf(player)) {
+            lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+            broadcastGameUpdate(metadata.lobbyId);
+        }
+        // Remove the player after reconnect deadline
+        const oldTimer = disconnectTimers.get(player.id);
+        if (oldTimer) clearTimeout(oldTimer);
+        disconnectTimers.delete(player.id);
+        const idx = lobby.players.findIndex(p => p.id === player.id);
+        if (idx > -1) {
+            const removed = lobby.players.splice(idx, 1)[0];
+            if (removed.isCreator && lobby.players.length > 0) {
+                lobby.players[0].isCreator = true;
+            }
+            sessions.delete(player.id);
+            checkGameAborted(metadata.lobbyId, metadata.id);
+            broadcastPlayers(metadata.lobbyId);
+            if (lobby.players.length === 0) lobbies.delete(metadata.lobbyId);
+        }
+    }, 15000);
+    reconnectTimers.set(player.id, reconnectTimer);
+    const timer = setTimeout(() => {
+        disconnectTimers.delete(player.id);
+        const idx = lobby.players.findIndex(p => p.id === player.id);
+        if (idx > -1 && lobby.players[idx].disconnected) {
+            const removed = lobby.players.splice(idx, 1)[0];
+            if (removed.isCreator) {
+                const removedAIs = lobby.players.filter(p => p.isAI);
+                lobby.players = lobby.players.filter(p => !p.isAI);
+                for (const ai of removedAIs) clearAITimeout(ai.id);
+                if (lobby.players.length > 0) lobby.players[0].isCreator = true;
+            }
+            sessions.delete(player.id);
+            checkGameAborted(metadata.lobbyId, metadata.id);
+            broadcastPlayers(metadata.lobbyId);
+            if (lobby.players.length === 0) lobbies.delete(metadata.lobbyId);
+        }
+    }, 30000);
+    disconnectTimers.set(player.id, timer);
+}
 
 function handleLeave(lobbyId, playerId) {
     const lobby = lobbies.get(lobbyId);

@@ -38,8 +38,11 @@ joinFormContainer.id = 'join-form-container';
 
 let isDisconnected = false;
 let disconnectToastTimeout = null;
-let wasInLobby = !!localStorage.getItem('unoInLobby');
 let countdownInterval = null;
+let actionQueue = [];
+let refreshErrorCount = 0;
+let refreshErrorTime = 0;
+let justReconnected = false;
 
 function encodeUGC(content) {
     const tempEl = document.createElement('div');
@@ -94,38 +97,99 @@ function showConfirm(msg) {
     });
 }
 
+let connecting = false;
+let currentWs = null;
 function connect() {
+    if (connecting && ws && ws.readyState !== WebSocket.CLOSED) return;
+    connecting = true;
     const wsUrl = new URL('/ws', location.href)
     wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:'
-    ws = new WebSocket(wsUrl);
+    const newWs = new WebSocket(wsUrl);
+    currentWs = newWs;
+    ws = newWs;
 
-    ws.onopen = () => {
+    newWs.onopen = () => {
+        if (newWs !== currentWs) return;
+        connecting = false;
         console.log('Connected to server');
         isDisconnected = false;
-        hideDisconnectedToast();
-        const savedLobbyId = localStorage.getItem('unoLobbyId');
-        const savedName = localStorage.getItem('unoPlayerName');
-        if (savedLobbyId && savedName && wasInLobby) {
-            sendMessage({ action: 'rejoin', lobbyId: savedLobbyId, name: savedName, playerId: localStorage.getItem('unoPlayerId') });
+        const btn = document.getElementById('dev-disconnect-btn');
+        if (btn) btn.textContent = '断开';
+        const savedId = localStorage.getItem('unoPlayerId');
+        console.log(`[client] onopen savedId=${savedId?.slice(0,8)} actionQueue=${actionQueue.length}`);
+        if (savedId) {
+            justReconnected = true;
+            sendMessage({ action: 'reconnect', playerId: savedId });
+        } else if (!localStorage.getItem('unoLeftLobby')) {
+            const savedName = localStorage.getItem('unoPlayerName');
+            const savedLobbyId = localStorage.getItem('unoLobbyId');
+            if (savedName && savedLobbyId) {
+                const msg = { action: 'join', name: savedName, lobbyId: savedLobbyId };
+                if (savedId) msg.playerId = savedId;
+                console.log(`[client] onopen fallback join name=${savedName}`);
+                sendMessage(msg);
+            }
+            hideDisconnectedToast();
+        } else {
+            localStorage.removeItem('unoLeftLobby');
+            nameInput.value = localStorage.getItem('unoPlayerName') || '';
+            lobbyIdInput.value = localStorage.getItem('unoLobbyId') || '';
+            hideDisconnectedToast();
         }
     };
 
-    ws.onmessage = (event) => {
+    newWs.onmessage = async (event) => {
         const message = JSON.parse(event.data);
 
         if (message.action === 'init') {
             myId = message.id;
             console.log('[init] myId =', myId);
+            if (message.reconnectLost) {
+                console.log('[init] reconnect lost, showing join form');
+                localStorage.removeItem('unoPlayerId');
+                localStorage.removeItem('unoInLobby');
+                localStorage.removeItem('unoInGame');
+                localStorage.setItem('unoLeftLobby', 'true');
+                myLobbyId = null;
+                resetGameState();
+            } else if (!localStorage.getItem('unoPlayerId')) {
+                localStorage.setItem('unoPlayerId', myId);
+            }
             if (message.dev) setupDevPanel();
+            hideDisconnectedToast();
             return;
         }
 
         if (message.action === 'error') {
+            if (message.message.includes('刷新页面')) {
+                const now = Date.now();
+                if (now - refreshErrorTime > 10000) {
+                    refreshErrorCount = 0;
+                }
+                refreshErrorTime = now;
+                refreshErrorCount++;
+                if (refreshErrorCount >= 3) {
+                    const reset = await showConfirm('多次重连失败，是否重置连接状态？（重置不会清除玩家名称和大厅 ID）');
+                    if (reset) {
+                        localStorage.removeItem('unoInLobby');
+                        localStorage.removeItem('unoInGame');
+                        localStorage.removeItem('unoPlayerId');
+                    }
+                    refreshErrorCount = 0;
+                    nameInput.disabled = false;
+                    lobbyIdInput.disabled = false;
+                    joinButton.disabled = false;
+                    return;
+                }
+            }
             showAlert(message.message).then(() => {
                 if (message.message.includes('刷新页面')) {
                     localStorage.removeItem('unoInLobby');
                     localStorage.removeItem('unoInGame');
-                    location.reload();
+                    localStorage.removeItem('unoPlayerId');
+                    nameInput.disabled = false;
+                    lobbyIdInput.disabled = false;
+                    joinButton.disabled = false;
                     return;
                 }
                 nameInput.disabled = false;
@@ -136,6 +200,9 @@ function connect() {
         }
 
         if (message.action === 'players') {
+            console.log(`[client] players received, flushing actionQueue (was ${actionQueue.length})`);
+            hideDisconnectedToast();
+            flushQueue();
             players = message.players;
             currentTurn = message.turn;
             myLobbyId = message.lobbyId;
@@ -148,9 +215,12 @@ function connect() {
         }
 
         if (message.action === 'start') {
+            console.log(`[client] start received, flushing actionQueue (was ${actionQueue.length})`);
+            hideDisconnectedToast();
+            flushQueue();
             myId = message.id;
             localStorage.setItem('unoPlayerId', myId);
-            wasInLobby = true;            console.log('[start] myId =', myId, 'players =', message.players.map(p => ({ id: p.id, name: p.name })), 'turn =', message.turn);
+            console.log('[start] myId =', myId, 'players =', message.players.map(p => ({ id: p.id, name: p.name })), 'turn =', message.turn);
             lobbyDiv.style.display = 'none';
             gameDiv.style.display = 'block';
             players = message.players;
@@ -164,6 +234,9 @@ function connect() {
         }
 
         if (message.action === 'update') {
+            console.log(`[client] update received, flushing actionQueue (was ${actionQueue.length})`);
+            hideDisconnectedToast();
+            flushQueue();
             console.log('[update] myId =', myId, 'turn =', message.turn, 'players =', message.players.map(p => ({ id: p.id, name: p.name })), 'current =', message.players[message.turn] ? message.players[message.turn].id : null);
             players = message.players;
             currentTurn = message.turn;
@@ -183,24 +256,31 @@ function connect() {
             showGameAborted();
         }
 
+        if (message.action === 'dev_state_export') {
+            console.log('[dev_state_export]', JSON.stringify(message.log, null, 2));
+            showAlert('状态日志已输出到控制台');
+            return;
+        }
+
         if (message.action === 'reaction') {
             showReaction(message.playerId, message.type, message.content);
         }
     };
 
-    ws.onclose = (event) => {
-        console.log('Disconnected from server. Reconnecting...', event.code, event.reason);
+    newWs.onclose = (event) => {
+        if (newWs !== currentWs) return;
+        connecting = false;
+        console.log(`[client] ws.onclose code=${event.code} reason=${event.reason}`);
         isDisconnected = true;
         showDisconnectedToast('connecting');
-        // Only reconnect if it wasn't a manual close
         if (event.code !== 1000) {
-            setTimeout(connect, 1000);
+            setTimeout(connect, 100);
         }
     };
 
-    ws.onerror = (err) => {
+    newWs.onerror = (err) => {
+        if (newWs !== currentWs) return;
         console.error('WebSocket error:', err);
-        // Don't manually close on error, let the browser handle it
     };
 }
 
@@ -208,16 +288,48 @@ function canSendMessage() {
     return ws && ws.readyState === WebSocket.OPEN;
 }
 
+function flushQueue() {
+    if (justReconnected) {
+        justReconnected = false;
+        console.log(`[client] flushQueue sending ${actionQueue.length} queued actions`);
+    }
+    while (actionQueue.length > 0) {
+        const msg = actionQueue.shift();
+        // Skip ready on reconnect: server state is already current,
+        // sending a stale ready would toggle the state incorrectly
+        if (msg.action === 'ready') {
+            console.log(`[client] flush SKIPPING stale ready`);
+            continue;
+        }
+        console.log(`[client] flush sending action=${msg.action}`);
+        if (canSendMessage()) {
+            ws.send(JSON.stringify(msg));
+        }
+    }
+}
+
 function sendMessage(message) {
     if (canSendMessage()) {
         ws.send(JSON.stringify(message));
         return true;
-    } else {
-        console.warn('WebSocket is not connected. Message not sent:', message);
-        isDisconnected = true;
-        showDisconnectedToast('action');
-        return false;
     }
+    console.log(`[client] QUEUE action=${message.action}`);
+    actionQueue.push(message);
+    isDisconnected = true;
+    showDisconnectedToast('action');
+    return false;
+}
+
+let lastReadyText = '';
+function updateReadyButton() {
+    if (!readyButton) return;
+    readyButton.disabled = false;
+    const me = players.find(p => p.id === myId);
+    const text = me && me.ready ? '取消准备' : '准备';
+    if (text === lastReadyText) return;
+    lastReadyText = text;
+    console.log(`[client] updateReadyButton myId=${myId?.slice(0,8)} found=${!!me} ready=${me?.ready} text=${text}`);
+    readyButton.textContent = text;
 }
 
 function updateTurnIndicator() {
@@ -285,7 +397,6 @@ function attemptRejoin() {
 function resetGameState() {
     localStorage.removeItem('unoInLobby');
     localStorage.removeItem('unoInGame');
-    wasInLobby = false;
     if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
     // Reset to lobby
     lobbyDiv.style.display = 'block';
@@ -294,7 +405,7 @@ function resetGameState() {
     requestAnimationFrame(() => {
 
         nameInput.value = (localStorage.getItem('unoPlayerName') || '').trim();
-        console.log(nameInput.value)
+        lobbyIdInput.value = localStorage.getItem('unoLobbyId') || '';
         nameInput.disabled = false;
         joinButton.disabled = false;
         lobbyIdInput.disabled = false;
@@ -410,7 +521,7 @@ function updatePlayers(players, turn) {
             actionsDiv.classList.add('ai-actions');
 
             const readyAiBtn = document.createElement('button');
-            readyAiBtn.textContent = player.ready ? '取消' : '就绪';
+            readyAiBtn.textContent = player.ready ? '取消准备' : '准备';
             readyAiBtn.classList.add('ready-ai-btn');
             readyAiBtn.addEventListener('click', () => {
                 sendMessage({ action: 'ai_ready', playerId: player.id });
@@ -429,7 +540,7 @@ function updatePlayers(players, turn) {
         }
 
         // Transfer creator button for non-AI non-creator players (visible to creator)
-        if (me && me.isCreator && !player.isAI && !player.isCreator && player.id !== myId) {
+        if (me && me.isCreator && !player.isAI && !player.isCreator && !player.disconnected && player.id !== myId) {
             const transferBtn = document.createElement('button');
             transferBtn.textContent = '转让房主';
             transferBtn.classList.add('transfer-creator-btn');
@@ -447,9 +558,7 @@ function updatePlayers(players, turn) {
     if (inviteAIBtn) {
         inviteAIBtn.style.display = (me && me.isCreator) ? '' : 'none';
     }
-    if (readyButton && me) {
-        readyButton.textContent = me.ready ? '取消' : '就绪';
-    }
+    updateReadyButton();
 
     const hasDeadline = players.some(p => p.disconnected && p.reconnectDeadline);
     if (hasDeadline && !countdownInterval) {
@@ -742,10 +851,14 @@ joinButton.addEventListener('click', async () => {
     lobbyIdInput.disabled = true;
     joinButton.disabled = true;
 
+    const savedId = localStorage.getItem('unoPlayerId');
     const message = { action: 'join', name: name };
-    if (lobbyId) {
-        message.lobbyId = lobbyId;
-    }
+    if (lobbyId) message.lobbyId = lobbyId;
+    if (savedId) message.playerId = savedId;
+    // Save immediately so auto-reconnect can find these even if WS closes
+    // before the first players/start message arrives
+    localStorage.setItem('unoPlayerName', name);
+    if (lobbyId) localStorage.setItem('unoLobbyId', lobbyId);
     sendMessage(message);
 });
 
@@ -756,6 +869,13 @@ if (inviteAIBtn) {
 }
 
 readyButton.addEventListener('click', () => {
+    if (readyButton.disabled) {
+        console.log(`[client] ready click ignored (disabled)`);
+        return;
+    }
+    readyButton.disabled = true;
+    readyButton.textContent = '...';
+    console.log(`[client] ready click, sending, isDisconnected=${isDisconnected}`);
     sendMessage({ action: 'ready' });
 });
 
@@ -940,6 +1060,10 @@ async function leaveLobby() {
     if (!confirmed) return;
 
     sendMessage({ action: 'leave' });
+    localStorage.removeItem('unoPlayerId');
+    localStorage.removeItem('unoInLobby');
+    localStorage.removeItem('unoInGame');
+    localStorage.setItem('unoLeftLobby', 'true');
     requestAnimationFrame(() => resetGameState())
 }
 
@@ -985,7 +1109,6 @@ function showGameOver(winnerName) {
     isGameOverShowing = true;
     localStorage.removeItem('unoInLobby');
     localStorage.removeItem('unoInGame');
-    wasInLobby = false;
 
     const isWinner = winnerName === players.find(p => p.id === myId)?.name;
     const myName = localStorage.getItem('unoPlayerName') || '';
@@ -1012,7 +1135,6 @@ function showGameAborted() {
     isGameOverShowing = true;
     localStorage.removeItem('unoInLobby');
     localStorage.removeItem('unoInGame');
-    wasInLobby = false;
 
     gameOverIcon.textContent = '⚡';
     gameOverTitle.textContent = '对局中止';
@@ -1089,7 +1211,11 @@ function __callWin__() {
 }
 
 // Dev Panel — press Ctrl+Shift+D to toggle; auto-shown when server is in dev mode
+let devPanelSetup = false;
 function setupDevPanel() {
+    if (devPanelSetup) return;
+    devPanelSetup = true;
+
     const panel = document.getElementById('dev-panel');
     if (!panel) return;
 
@@ -1117,6 +1243,10 @@ function setupDevPanel() {
         if (action === 'dev_disconnect') {
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.close(4001, 'dev disconnect');
+                btn.textContent = '重连';
+            } else if (ws && ws.readyState === WebSocket.CLOSED) {
+                btn.textContent = '断开';
+                connect();
             }
             return;
         }

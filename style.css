@@ -11,6 +11,11 @@
     -webkit-user-select: none !important;
 }
 
+html {
+    background: linear-gradient(135deg, #121212 0%, #2d2d2d 100%);
+    min-height: 100%;
+}
+
 body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     /* background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); */
@@ -1588,7 +1593,7 @@ footer a:hover {
     text-decoration-color: #6b7280;
 }
 
-footer, footer>* {
+.user-select {
     user-select: text !important;
     -webkit-user-select: text !important;
 }
