@@ -606,7 +606,6 @@ function updatePlayers(newPlayers: Player[], turn: number): void {
 }
 
 function updateHand(hand: Card[]): void {
-  const cardControls = playerHandDiv.querySelector('#card-controls');
   playerHandDiv.innerHTML = '';
 
   for (let i = 0; i < hand.length; i++) {
@@ -639,8 +638,6 @@ function updateHand(hand: Card[]): void {
     cancelButton.addEventListener('click', clearSelection);
     playerHandDiv.appendChild(cancelButton);
   }
-
-  if (cardControls) playerHandDiv.appendChild(cardControls);
 }
 
 function handleCardClick(card: Card, cardIndex: number, hand: Card[]): void {

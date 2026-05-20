@@ -528,6 +528,8 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
   }
 }
 
+const MAX_HAND_CARDS = 100;
+
 function handleDraw(lobbyId: string, playerId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby || !lobby.game.started) return;
@@ -539,6 +541,12 @@ function handleDraw(lobbyId: string, playerId: string): void {
   }
 
   const player = lobby.players[playerIndex];
+
+  if (player.hand!.length >= MAX_HAND_CARDS) {
+    lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+    broadcastGameUpdate(lobbyId);
+    return;
+  }
 
   const drawn = drawCardsFromDeck(lobby, lobbyId, 1);
   if (drawn.length > 0) {
@@ -936,6 +944,7 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           }
           broadcastPlayers(session.lobbyId);
           if (rLobby!.game.started) {
+            broadcastGameUpdate(session.lobbyId);
             const player = existingPlayer || rLobby!.players[0];
             if (player && player.hand) {
               ws.send(JSON.stringify({
@@ -1088,9 +1097,6 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             shuffleDeck(metadata.lobbyId!);
             drawn = lobby2.game.deck.splice(0, lobby2.game.deck.length);
           }
-          if (drawn.length > 0 && lobby2.game.discardPile.length < 2) {
-            lobby2.game.discardPile.push(drawn.shift()!);
-          }
           player2.hand!.push(...drawn);
           broadcastGameUpdate(metadata.lobbyId!);
           return;
@@ -1201,6 +1207,9 @@ function processClose(_ws: WebSocket, metadata: ClientMetadata): void {
       sessions.delete(player.id);
       checkGameAborted(metadata.lobbyId!, metadata.id);
       broadcastPlayers(metadata.lobbyId!);
+      if (lobby.game.started) {
+        broadcastGameUpdate(metadata.lobbyId!);
+      }
       if (lobby.players.length === 0) lobbies.delete(metadata.lobbyId!);
     }
   }, 30000);
