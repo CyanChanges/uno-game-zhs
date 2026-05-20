@@ -477,11 +477,11 @@ function resetGameState(): void {
   });
 }
 
-function updatePlayers(players: Player[], turn: number): void {
+function updatePlayers(newPlayers: Player[], turn: number): void {
   opponentHandsDiv.innerHTML = '';
   playersList.innerHTML = '';
-  for (let i = 0; i < players.length; i++) {
-    const player = players[i];
+  for (let i = 0; i < newPlayers.length; i++) {
+    const player = newPlayers[i];
     const playerDiv = document.createElement('div');
     playerDiv.classList.add('player');
     if (i === turn) {
@@ -550,7 +550,7 @@ function updatePlayers(players: Player[], turn: number): void {
     li.appendChild(nameSpan);
 
     // Ready button for unready AI players (only visible to creator)
-    const me = players.find(p => p.id === myId);
+    const me = newPlayers.find(p => p.id === myId);
     if (player.isAI && me && me.isCreator) {
       const actionsDiv = document.createElement('span');
       actionsDiv.classList.add('ai-actions');
@@ -589,18 +589,19 @@ function updatePlayers(players: Player[], turn: number): void {
   }
 
   // Show/hide invite AI button
-  const me = players.find(p => p.id === myId);
+  const me = newPlayers.find(p => p.id === myId);
   if (inviteAIBtn) {
     inviteAIBtn.style.display = (me && me.isCreator) ? '' : 'none';
   }
   updateReadyButton();
 
-  const hasDeadline = players.some(p => p.disconnected && !!p.reconnectDeadline);
-  if (hasDeadline && !countdownInterval) {
-    countdownInterval = setInterval(() => updatePlayers(players, turn), 1000);
-  } else if (!hasDeadline && countdownInterval) {
+  if (countdownInterval) {
     clearInterval(countdownInterval);
     countdownInterval = null;
+  }
+  const hasDeadline = newPlayers.some(p => p.disconnected && !!p.reconnectDeadline);
+  if (hasDeadline) {
+    countdownInterval = setInterval(() => updatePlayers(players, currentTurn), 1000);
   }
 }
 

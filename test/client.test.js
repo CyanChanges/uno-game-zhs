@@ -40,7 +40,7 @@ describe('UNO Client', () => {
     await page.close()
   })
 
-  it('shows (已准备) after player readies', async () => {
+  it('shows (已准备) after player readies and state persists after opponent disconnects', { timeout: 30000 }, async () => {
     const pageA = await browser.newPage()
     const pageB = await browser.newPage()
     await pageA.goto(BASE)
@@ -66,58 +66,44 @@ describe('UNO Client', () => {
       return items.length === 2
     })
 
-    // Bob disconnect
-    await pageB.close()
-
-    const newPageB = await browser.newPage()
-
     // Alice clicks ready → should show (已准备)
     await pageA.click('#ready')
     await pageA.waitForFunction(() => {
       const items = document.querySelectorAll('#players li')
-      return items[0]?.textContent?.includes('（已准备）')
+      if (items.length === 0) return false
+      return items[0].textContent.indexOf('（已准备）') !== -1
     })
 
     const aliceName = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
     expect(aliceName).toContain('（已准备）')
 
-    await wait(1500)
+    // Bob disconnect
+    await pageB.close()
 
-    // 1.5s recheck Alice is ready
+    // Wait for Bob to appear as disconnected
+    await pageA.waitForFunction(() => {
+      const items = document.querySelectorAll('#players li')
+      return items.length === 2 && items[1].classList.contains('disconnected')
+    }, { timeout: 10000 })
+
+    // Alice's ready should persist after Bob disconnects (countdown interval shouldn't corrupt it)
+    await wait(2500)
     const aliceName1 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
     expect(aliceName1).toContain('（已准备）')
 
-    await wait(300)
-
-    // Bob rejoin
-    await newPageB.goto(BASE)
-    await newPageB.waitForFunction(() => {
-      const items = document.querySelectorAll('#players li')
-      return items.length === 2
-    }, { timeout: 3000 })
-
+    // Alice clicks ready again → should toggle to NOT ready
     await pageA.click('#ready')
+    await pageA.waitForFunction(() => {
+      const items = document.querySelectorAll('#players li')
+      if (items.length === 0) return false
+      return items[0].textContent.indexOf('（已准备）') === -1
+    })
 
     const aliceName2 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
-    expect(aliceName2).toContain('（已准备）')
-
-    // Bob disconnect again
-    await newPageB.close()
-
-    await wait(500)
-
-    const aliceName3 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
-    expect(aliceName3).toContain('（已准备）')
-
-    await pageA.click('#ready')
-
-    await wait(1500)
-
-    const aliceName4 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
-    expect(aliceName4).not.toContain('（已准备）')
+    expect(aliceName2).not.toContain('（已准备）')
 
     await pageA.close()
-  }, { timeout: 30000})
+  })
 
   it('full flow: B disconnects → A readies (stays ready) → B reconnects → B readies → game starts', { timeout: 45000 }, async () => {
     const pageA = await browser.newPage()
@@ -144,7 +130,7 @@ describe('UNO Client', () => {
     await pageB.close()
     await pageA.waitForFunction(() => {
       const items = document.querySelectorAll('#players li')
-      return items.length === 2 && items[1]?.classList?.contains('disconnected')
+      return items.length === 2 && items[1].classList.contains('disconnected')
     }, { timeout: 10000 })
 
     // 4. A clicks ready
@@ -177,7 +163,7 @@ describe('UNO Client', () => {
     await pageB2.waitForFunction(() => {
       const items = document.querySelectorAll('#players li')
       if (items.length < 2) return false
-      return !items[1]?.classList?.contains('disconnected')
+      return items.length >= 2 && !items[1].classList.contains('disconnected')
     }, { timeout: 5000 })
 
     const aliceReady2 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
@@ -224,15 +210,17 @@ describe('UNO Client', () => {
     }, { timeout: 10000 })
 
     const getCardCount = async (page) => (await page.$$('#player-hand .card')).length
-    const isMyTurn = async (page) => await page.evaluate(() =>
-      document.getElementById('turn-indicator')?.classList.contains('my-turn')
-    )
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator');
+      return el ? el.classList.contains('my-turn') : false;
+    })
 
     // If B goes first, B draws to pass turn to A
     if (!(await isMyTurn(pageA))) {
-      await pageB.waitForFunction(() =>
-        document.getElementById('turn-indicator')?.classList.contains('my-turn')
-        , { timeout: 10000 })
+      await pageB.waitForFunction(() => {
+        const el = document.getElementById('turn-indicator');
+        return el ? el.classList.contains('my-turn') : false;
+      }, { timeout: 10000 })
       await pageB.click('#draw-card')
       await pageA.waitForTimeout(500)
     }
@@ -242,9 +230,10 @@ describe('UNO Client', () => {
     await pageA.click('#draw-card')
     await pageA.waitForTimeout(500)
     // Turn passes to B
-    await pageB.waitForFunction(() =>
-      document.getElementById('turn-indicator')?.classList.contains('my-turn')
-      , { timeout: 10000 })
+      await pageB.waitForFunction(() => {
+        const el = document.getElementById('turn-indicator');
+        return el ? el.classList.contains('my-turn') : false;
+      }, { timeout: 10000 })
     const aAfter = await getCardCount(pageA)
     expect(aAfter).toBe(aBefore + 1)
 
