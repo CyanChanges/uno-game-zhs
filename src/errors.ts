@@ -3,10 +3,9 @@ export interface ErrorDef {
   needRefresh: boolean;
 }
 
-export const ERR = {
+export const ERR: Record<string, ErrorDef> = {
   NOT_IN_LOBBY:         { message: '未加入大厅', needRefresh: false },
   LOBBY_NOT_FOUND:      { message: '游戏房间已不存在，请刷新页面', needRefresh: true },
-  LOBBY_NOT_FOUND_REFRESH: { message: '游戏房间已不存在，请刷新页面', needRefresh: true },
   PLAYER_NOT_FOUND:     { message: '玩家ID未找到', needRefresh: false },
   GAME_NOT_STARTED:     { message: '对局未开始', needRefresh: false },
   GAME_ALREADY_STARTED: { message: '对局已开始', needRefresh: false },
@@ -23,7 +22,6 @@ export const ERR = {
 
 export type ErrorCode = keyof typeof ERR;
 
-export function errorResponse(code: ErrorCode): { action: string; message: string; needRefresh: boolean } {
-  const def = ERR[code];
-  return { action: 'error', message: def.message, needRefresh: def.needRefresh };
+export function errorResponse(code: ErrorCode): { action: string; errorKey: ErrorCode } {
+  return { action: 'error', errorKey: code };
 }

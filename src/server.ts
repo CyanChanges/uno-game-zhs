@@ -1023,14 +1023,14 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
 
         case 'play_multiple':
           if (!lobbies.has(metadata.lobbyId || '')) {
-            ws.send(JSON.stringify(errorResponse('LOBBY_NOT_FOUND_REFRESH'))); return;
+            ws.send(JSON.stringify(errorResponse('LOBBY_NOT_FOUND'))); return;
           }
           handlePlayMultiple(metadata.lobbyId!, metadata.id, message.cards!);
           return;
 
         case 'leave':
           if (!lobbies.has(metadata.lobbyId || '')) {
-            ws.send(JSON.stringify(errorResponse('LOBBY_NOT_FOUND_REFRESH'))); return;
+            ws.send(JSON.stringify(errorResponse('LOBBY_NOT_FOUND'))); return;
           }
           handleLeave(metadata.lobbyId!, metadata.id);
           return;

@@ -55,7 +55,7 @@ interface ServerMessage {
   discardPile?: Card[];
   winner?: string;
   message?: string;
-  needRefresh?: boolean;
+  errorKey?: string;
   playerId?: string;
   type?: string;
   content?: string;
@@ -69,6 +69,30 @@ function clientLog(msg: string, ...args: unknown[]): void {
 }
 function clientWarn(msg: string, ...args: unknown[]): void {
   console.warn(`${CLIENT_PREFIX} ${msg}`, ...args);
+}
+
+// ── Error definitions (fetched from /errors) ─────────────
+interface ErrorDef {
+  message: string;
+  needRefresh: boolean;
+}
+let errorDefs: Record<string, ErrorDef> | null = null;
+
+async function loadErrorDefs(): Promise<void> {
+  if (errorDefs) return;
+  try {
+    const resp = await fetch('/errors');
+    if (resp.ok) {
+      errorDefs = await resp.json();
+      clientLog('loaded error definitions');
+    }
+  } catch (_e) {
+    clientWarn('failed to load error definitions');
+  }
+}
+
+function getErrorDef(key: string): ErrorDef | undefined {
+  return errorDefs ? errorDefs[key] : undefined;
 }
 
 let myId: string | null = null;
@@ -166,6 +190,7 @@ function connect(): void {
     joinButton.disabled = false;
     lobbyIdInput.disabled = false;
     nameInput.disabled = false;
+    loadErrorDefs();
     const btn = document.getElementById('dev-disconnect-btn');
     if (btn) btn.textContent = '断开';
     const savedId = localStorage.getItem('unoPlayerId');
@@ -214,7 +239,12 @@ function connect(): void {
     }
 
     if (message.action === 'error') {
-      if (message.needRefresh) {
+      const key = message.errorKey;
+      const def = key ? getErrorDef(key) : undefined;
+      const msg = def ? def.message : (message.message || '未知错误');
+      const needRefresh = def ? def.needRefresh : (!!message.message && message.message.includes('刷新页面'));
+
+      if (needRefresh) {
         const now = Date.now();
         if (now - refreshErrorTime > 10000) {
           refreshErrorCount = 0;
@@ -235,8 +265,8 @@ function connect(): void {
           return;
         }
       }
-      showAlert(message.message || '').then(() => {
-        if (message.needRefresh) {
+      showAlert(msg).then(() => {
+        if (needRefresh) {
           localStorage.removeItem('unoInLobby');
           localStorage.removeItem('unoInGame');
           localStorage.removeItem('unoPlayerId');

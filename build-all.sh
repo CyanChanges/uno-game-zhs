@@ -3,5 +3,5 @@
 set -e
 
 ./build.sh win
-./build.sh linux
 ./build.sh linux arm64
+./build.sh linux
