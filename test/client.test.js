@@ -8,7 +8,7 @@ const BASE = 'http://localhost:3000'
 let browser, serverProcess
 
 beforeAll(async () => {
-  serverProcess = fork(path.resolve('./server.js'), [], {
+  serverProcess = fork(path.resolve('./dist/server.js'), [], {
     env: { ...process.env, NODE_ENV: 'development' },
     silent: true
   })
@@ -40,85 +40,84 @@ describe('UNO Client', () => {
     await page.close()
   })
 
-  // know issue
-  // it('shows (已准备) after player readies', async () => {
-  //   const pageA = await browser.newPage()
-  //   const pageB = await browser.newPage()
-  //   await pageA.goto(BASE)
-  //   await pageB.goto(BASE)
+  it('shows (已准备) after player readies', async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
 
-  //   // Join lobby
-  //   await pageA.fill('#name', 'Alice')
-  //   await pageA.fill('#lobby-id', 'test1')
-  //   await pageA.click('#join')
-  //   await pageA.waitForSelector('#players li')
+    // Join lobby
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', 'test1')
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
 
-  //   await pageB.fill('#name', 'Bob')
-  //   await pageB.fill('#lobby-id', 'test1')
-  //   await pageB.click('#join')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', 'test1')
+    await pageB.click('#join')
 
-  //   // Wait for both to see each other
-  //   await pageA.waitForFunction(() => {
-  //     const items = document.querySelectorAll('#players li')
-  //     return items.length === 2
-  //   })
-  //   await pageB.waitForFunction(() => {
-  //     const items = document.querySelectorAll('#players li')
-  //     return items.length === 2
-  //   })
+    // Wait for both to see each other
+    await pageA.waitForFunction(() => {
+      const items = document.querySelectorAll('#players li')
+      return items.length === 2
+    })
+    await pageB.waitForFunction(() => {
+      const items = document.querySelectorAll('#players li')
+      return items.length === 2
+    })
 
-  //   // Bob disconnect
-  //   await pageB.close()
+    // Bob disconnect
+    await pageB.close()
 
-  //   const newPageB = await browser.newPage()
+    const newPageB = await browser.newPage()
 
-  //   // Alice clicks ready → should show (已准备)
-  //   await pageA.click('#ready')
-  //   await pageA.waitForFunction(() => {
-  //     const items = document.querySelectorAll('#players li')
-  //     return items[0]?.textContent?.includes('（已准备）')
-  //   })
+    // Alice clicks ready → should show (已准备)
+    await pageA.click('#ready')
+    await pageA.waitForFunction(() => {
+      const items = document.querySelectorAll('#players li')
+      return items[0]?.textContent?.includes('（已准备）')
+    })
 
-  //   const aliceName = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
-  //   expect(aliceName).toContain('（已准备）')
+    const aliceName = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
+    expect(aliceName).toContain('（已准备）')
 
-  //   await wait(1500)
+    await wait(1500)
 
-  //   // 1.5s recheck Alice is ready
-  //   const aliceName1 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
-  //   expect(aliceName1).toContain('（已准备）')
+    // 1.5s recheck Alice is ready
+    const aliceName1 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
+    expect(aliceName1).toContain('（已准备）')
 
-  //   await wait(300)
+    await wait(300)
 
-  //   // Bob rejoin
-  //   await newPageB.goto(BASE)
-  //   await newPageB.waitForFunction(() => {
-  //     const items = document.querySelectorAll('#players li')
-  //     return items.length === 2
-  //   }, { timeout: 3000 })
+    // Bob rejoin
+    await newPageB.goto(BASE)
+    await newPageB.waitForFunction(() => {
+      const items = document.querySelectorAll('#players li')
+      return items.length === 2
+    }, { timeout: 3000 })
 
-  //   await pageA.click('#ready')
+    await pageA.click('#ready')
 
-  //   const aliceName2 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
-  //   expect(aliceName2).toContain('（已准备）')
+    const aliceName2 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
+    expect(aliceName2).toContain('（已准备）')
 
-  //   // Bob disconnect again
-  //   await newPageB.close()
+    // Bob disconnect again
+    await newPageB.close()
 
-  //   await wait(500)
+    await wait(500)
 
-  //   const aliceName3 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
-  //   expect(aliceName3).toContain('（已准备）')
+    const aliceName3 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
+    expect(aliceName3).toContain('（已准备）')
 
-  //   await pageA.click('#ready')
+    await pageA.click('#ready')
 
-  //   await wait(1500)
+    await wait(1500)
 
-  //   const aliceName4 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
-  //   expect(aliceName4).not.toContain('（已准备）')
+    const aliceName4 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
+    expect(aliceName4).not.toContain('（已准备）')
 
-  //   await pageA.close()
-  // }, { timeout: 30000})
+    await pageA.close()
+  }, { timeout: 30000})
 
   it('full flow: B disconnects → A readies (stays ready) → B reconnects → B readies → game starts', { timeout: 45000 }, async () => {
     const pageA = await browser.newPage()

@@ -202,6 +202,7 @@ Temporary Items
 # Build outputs
 dist/
 build/
+bin/
 
 # Test outputs
 test-results/

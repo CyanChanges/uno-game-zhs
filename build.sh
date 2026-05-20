@@ -2,7 +2,7 @@
 
 set -eu
 
-DIST_DIR="dist/"
+BIN_DIR="bin/"
 CURRENT_DATE=$(date +%F)
 TARGET_DIR="release/"
 
@@ -38,15 +38,19 @@ if [ -f "$FULL_PATH" ]; then
     rm "$FULL_PATH"
 fi
 
-if [ -d "$DIST_DIR" ]; then
-    rm -rf "$DIST_DIR"
+# Build TypeScript first
+echo "Building TypeScript..."
+npm run build
+
+if [ -d "$BIN_DIR" ]; then
+    rm -rf "$BIN_DIR"
 fi
-mkdir -p "$DIST_DIR"
+mkdir -p "$BIN_DIR"
 
 echo "build for $PLATFORM $ARCH..."
 
 if [ "$PLATFORM" = "win" ]; then
-    outfile="${DIST_DIR}uno-server.exe"
+    outfile="${BIN_DIR}uno-server.exe"
 
     $PKG . --targets "node12-win-${ARCH}" --output "$outfile" --public
 
@@ -57,10 +61,8 @@ if [ "$PLATFORM" = "win" ]; then
     esac
     
     export GOOS="windows"
-
-    # bash scripts/build-with-copyright "package.json" "$outfile"
 else
-    outfile="${DIST_DIR}uno-server"
+    outfile="${BIN_DIR}uno-server"
     # Fallback to npx pkg for non-Windows platforms if they are still Node.js based
     $PKG . --targets "node12-${PLATFORM}-${ARCH}" --output "$outfile" --public
 fi
