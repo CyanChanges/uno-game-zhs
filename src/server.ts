@@ -540,13 +540,13 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
       const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
       const nextPlayer = lobby.players[nextPlayerIndex];
       nextPlayer.hand!.push(...drawCardsFromDeck(lobby, lobbyId, 2));
-      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+      // lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
     } else if (card.type === 'wild' || card.type === 'wild4') {
       if (card.type === 'wild4') {
         const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
         const nextPlayer = lobby.players[nextPlayerIndex];
         nextPlayer.hand!.push(...drawCardsFromDeck(lobby, lobbyId, 4));
-        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+        // lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
       } else {
         lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
       }
