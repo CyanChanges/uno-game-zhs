@@ -390,7 +390,7 @@ function handlePlayMultiple(lobbyId, playerId, cards) {
         const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
         const nextPlayer = lobby.players[nextPlayerIndex];
         nextPlayer.hand.push(...drawCardsFromDeck(lobby, lobbyId, 2 * cardCount));
-        lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
+        // lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
     } else if (lastCard.type === 'wild4') {
         // Next player draws 4 cards per wild+4 played
         const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
@@ -447,7 +447,7 @@ function handlePlay(lobbyId, playerId, card) {
             const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
             const nextPlayer = lobby.players[nextPlayerIndex];
             nextPlayer.hand.push(...drawCardsFromDeck(lobby, lobbyId, 2));
-            lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
+            // lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
         } else if (card.type === 'wild' || card.type === 'wild4') {
             // Color will be chosen by the client
             if (card.type === 'wild4') {

@@ -475,6 +475,65 @@ describe('UNO Client', () => {
     await pageB.close()
   })
 
+  it('leaving player does not receive lobby updates after leaving', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'leave-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+
+    // A leaves the lobby
+    await pageA.click('#leave-lobby')
+    await pageA.waitForSelector('#modal-ok-btn', { timeout: 3000 })
+    await pageA.click('#modal-ok-btn')
+
+    // A should return to join form
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('join')
+      return el && !el.disabled
+    }, { timeout: 5000 })
+
+    // Verify A's localStorage reflects left state
+    const leftFlag = await pageA.evaluate(() => localStorage.getItem('unoLeftLobby'))
+    expect(leftFlag).toBe('true')
+    const noId = await pageA.evaluate(() => localStorage.getItem('unoPlayerId'))
+    expect(noId).toBeNull()
+
+    // B adds AI and starts game
+    await pageB.click('#invite-ai')
+    await pageB.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageB.click('#ready')
+    // AI is ready by default, game should start
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // Wait a bit — A should NOT see any lobby or game updates
+    await pageA.waitForTimeout(1500)
+
+    // A should still be at join form, not showing lobby/players
+    const aInJoinForm = await pageA.evaluate(() => {
+      const join = document.getElementById('join')
+      const players = document.querySelectorAll('#players li')
+      const lobby = document.getElementById('lobby')
+      return join && !join.disabled && players.length === 0 && lobby && lobby.style.display !== 'none'
+    })
+    expect(aInJoinForm).toBe(true)
+
+    await pageA.close()
+    await pageB.close()
+  })
+
   // TODO: fix game start race condition with 3+ players / AI
   it('3-player room: surrender removes player, game continues', { timeout: 45000 }, async () => {
     const pageA = await browser.newPage()

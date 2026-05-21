@@ -1035,6 +1035,8 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             ws.send(JSON.stringify(errorResponse('LOBBY_NOT_FOUND'))); return;
           }
           handleLeave(metadata.lobbyId!, metadata.id);
+          sessions.delete(metadata.id);
+          metadata.lobbyId = null;
           return;
 
         case 'surrender': {
