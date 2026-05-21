@@ -890,7 +890,7 @@ drawCardButton.addEventListener('click', () => {
 const surrenderBtn = document.getElementById('surrender-btn');
 if (surrenderBtn) {
     surrenderBtn.addEventListener('click', async () => {
-        const confirmed = await showConfirm('确定要认输吗？');
+        const confirmed = await showConfirm('认输后仅可使用观战模式加入当前对局, 确定要认输吗？');
         if (confirmed) {
             sendMessage({ action: 'surrender' });
         }

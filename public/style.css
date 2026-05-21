@@ -612,6 +612,26 @@ h1 {
     font-size: 0.8rem;
 }
 
+/* Spectator mode */
+body.spectator #player-hand-area,
+body.spectator #action-buttons,
+body.spectator #wild-color-picker,
+body.spectator #surrender-btn,
+body.spectator #reaction-bar {
+    display: none !important;
+}
+
+body.spectator #turn-indicator {
+    background: linear-gradient(135deg, #4a5568 0%, #2d3748 100%);
+    box-shadow: 0 8px 20px rgba(74, 85, 104, 0.3);
+}
+
+body.spectator #turn-indicator::after {
+    content: ' (观战中)';
+    font-size: 0.8em;
+    opacity: 0.8;
+}
+
 .card {
     width: 100px;
     height: 150px;

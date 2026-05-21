@@ -57,6 +57,7 @@ interface ServerMessage {
   winner?: string;
   message?: string;
   errorKey?: string;
+  spectator?: boolean;
   playerId?: string;
   type?: string;
   content?: string;
@@ -106,6 +107,11 @@ let selectedCards: SavedSelection[] = [];
 let isSelectingMultiple = false;
 let myHand: Card[] = [];
 let myLobbyId: string | null = null;
+let isSpectating = false;
+
+function getLeaveSpectateBtn(): HTMLButtonElement | null {
+  return document.getElementById('leave-spectate-btn') as HTMLButtonElement | null;
+}
 
 // Add these elements to the existing DOM references
 const joinFormContainer = document.createElement('div');
@@ -221,140 +227,182 @@ function connect(): void {
   newWs.onmessage = async (event: MessageEvent) => {
     const message: ServerMessage = JSON.parse(event.data);
 
-    if (message.action === 'init') {
-      myId = message.id!;
-      clientLog('[init] myId =', myId);
-      if (message.reconnectLost) {
-        clientLog('[init] reconnect lost, showing join form');
-        localStorage.removeItem('unoPlayerId');
-        localStorage.removeItem('unoInLobby');
-        localStorage.removeItem('unoInGame');
-        localStorage.setItem('unoLeftLobby', 'true');
-        myLobbyId = null;
-        resetGameState();
-      } else if (!localStorage.getItem('unoPlayerId')) {
-        localStorage.setItem('unoPlayerId', myId);
-      }
-      if (message.dev) setupDevPanel();
-      hideDisconnectedToast();
-      return;
-    }
-
-    if (message.action === 'error') {
-      const key = message.errorKey;
-      const def = key ? getErrorDef(key) : undefined;
-      const msg = def ? def.message : (message.message || '未知错误');
-      const needRefresh = def ? def.needRefresh : (!!message.message && message.message.includes('刷新页面'));
-
-      if (needRefresh) {
-        const now = Date.now();
-        if (now - refreshErrorTime > 10000) {
-          refreshErrorCount = 0;
+    switch (message.action) {
+      case 'init':
+        myId = message.id!;
+        clientLog('[init] myId =', myId);
+        if (message.reconnectLost) {
+          clientLog('[init] reconnect lost, showing join form');
+          localStorage.removeItem('unoPlayerId');
+          localStorage.removeItem('unoInLobby');
+          localStorage.removeItem('unoInGame');
+          localStorage.setItem('unoLeftLobby', 'true');
+          myLobbyId = null;
+          resetGameState();
+        } else if (!localStorage.getItem('unoPlayerId')) {
+          localStorage.setItem('unoPlayerId', myId);
         }
-        refreshErrorTime = now;
-        refreshErrorCount++;
-        if (refreshErrorCount >= 3) {
-          const reset = await showConfirm('多次重连失败，是否重置连接状态？（重置不会清除玩家名称和大厅 ID）');
-          if (reset) {
+        if (message.dev) setupDevPanel();
+        hideDisconnectedToast();
+        return;
+
+      case 'error': {
+        const key = message.errorKey;
+        const def = key ? getErrorDef(key) : undefined;
+        const msg = def ? def.message : (message.message || '未知错误');
+        const needRefresh = def ? def.needRefresh : (!!message.message && message.message.includes('刷新页面'));
+        if (needRefresh) {
+          const now = Date.now();
+          if (now - refreshErrorTime > 10000) refreshErrorCount = 0;
+          refreshErrorTime = now;
+          refreshErrorCount++;
+          if (refreshErrorCount >= 3) {
+            const reset = await showConfirm('多次重连失败，是否重置连接状态？（重置不会清除玩家名称和大厅 ID）');
+            if (reset) {
+              localStorage.removeItem('unoInLobby');
+              localStorage.removeItem('unoInGame');
+              localStorage.removeItem('unoPlayerId');
+            }
+            refreshErrorCount = 0;
+            nameInput.disabled = false;
+            lobbyIdInput.disabled = false;
+            joinButton.disabled = false;
+            return;
+          }
+        }
+        showAlert(msg).then(() => {
+          if (needRefresh) {
             localStorage.removeItem('unoInLobby');
             localStorage.removeItem('unoInGame');
             localStorage.removeItem('unoPlayerId');
           }
-          refreshErrorCount = 0;
           nameInput.disabled = false;
           lobbyIdInput.disabled = false;
           joinButton.disabled = false;
-          return;
-        }
+        });
+        return;
       }
-      showAlert(msg).then(() => {
-        if (needRefresh) {
+
+      case 'players':
+        clientLog(`players received, flushing actionQueue (was ${actionQueue.length})`);
+        hideDisconnectedToast();
+        players = message.players || [];
+        currentTurn = message.turn || 0;
+        gameDirection = message.direction || 1;
+        myLobbyId = message.lobbyId || null;
+        localStorage.setItem('unoPlayerId', myId!);
+        localStorage.setItem('unoInLobby', '1');
+        flushQueue();
+        clientLog('[players] myId =', myId, 'players =', players.map(p => ({ id: p.id, name: p.name })));
+        updatePlayers(players, currentTurn);
+        updateTurnIndicator();
+        showLobbyInfo(message.lobbyId || '');
+        break;
+
+      case 'start':
+        clientLog(`start received, flushing actionQueue (was ${actionQueue.length})`);
+        hideDisconnectedToast();
+        flushQueue();
+        myId = message.id!;
+        localStorage.setItem('unoPlayerId', myId);
+        isSpectating = message.spectator || false;
+        clientLog('[start] myId =', myId, 'players =', (message.players || []).map(p => ({ id: p.id, name: p.name })), 'turn =', message.turn);
+        lobbyDiv.style.display = 'none';
+        gameDiv.style.display = 'block';
+        players = message.players || [];
+        currentTurn = message.turn || 0;
+        gameDirection = message.direction || 1;
+        myHand = message.hand || [];
+        updatePlayers(players, currentTurn);
+        updateHand(myHand);
+        applyCardLayout();
+        updateDiscardPile(message.discardPile || []);
+        updateTurnIndicator();
+        const _btn0 = getLeaveSpectateBtn(); if (_btn0) _btn0.style.display = isSpectating ? '' : 'none';
+        document.body.classList.toggle('spectator', isSpectating);
+        break;
+
+      case 'update':
+        clientLog(`update received, flushing actionQueue (was ${actionQueue.length})`);
+        hideDisconnectedToast();
+        flushQueue();
+        if (message.spectator !== undefined) {
+          isSpectating = message.spectator;
+          const _btn = getLeaveSpectateBtn(); if (_btn) _btn.style.display = isSpectating ? '' : 'none';
+          document.body.classList.toggle('spectator', isSpectating);
+        }
+        clientLog('[update] myId =', myId, 'turn =', message.turn, 'players =', (message.players || []).map(p => ({ id: p.id, name: p.name })), 'current =', (message.players || [])[message.turn || 0] ? (message.players || [])[message.turn || 0].id : null);
+        players = message.players || [];
+        currentTurn = message.turn || 0;
+        gameDirection = message.direction || 1;
+        myHand = message.hand || [];
+        updatePlayers(players, currentTurn);
+        updateHand(myHand);
+        applyCardLayout();
+        updateDiscardPile(message.discardPile || []);
+        updateTurnIndicator();
+        break;
+
+      case 'win':
+        if (isSpectating) {
+          showAlert(`${message.winner || '-'} 赢得了游戏！`).then(() => {
+            resetGameState();
+          });
+        } else {
+          showGameOver(message.winner || '');
+        }
+        break;
+
+      case 'surrender_offer': {
+        const spectate = await showConfirm('是否进入观战模式？\n确定=观战  取消=离开');
+        if (spectate) {
+          sendMessage({ action: 'spectate_accept' });
+        } else {
+          sendMessage({ action: 'leave' });
+          localStorage.removeItem('unoPlayerId');
           localStorage.removeItem('unoInLobby');
           localStorage.removeItem('unoInGame');
-          localStorage.removeItem('unoPlayerId');
+          resetGameState();
         }
-        nameInput.disabled = false;
-        lobbyIdInput.disabled = false;
-        joinButton.disabled = false;
-      });
-      return;
-    }
+        return;
+      }
 
-    if (message.action === 'players') {
-      clientLog(`players received, flushing actionQueue (was ${actionQueue.length})`);
-      hideDisconnectedToast();
-      players = message.players || [];
-      currentTurn = message.turn || 0;
-      gameDirection = message.direction || 1;
-      myLobbyId = message.lobbyId || null;
-      localStorage.setItem('unoPlayerId', myId!);
-      localStorage.setItem('unoInLobby', '1');
-      flushQueue();
-      clientLog('[players] myId =', myId, 'players =', players.map(p => ({ id: p.id, name: p.name })));
-      updatePlayers(players, currentTurn);
-      updateTurnIndicator();
-      showLobbyInfo(message.lobbyId || '');
-    }
+      case 'surrendered':
+        localStorage.removeItem('unoInLobby');
+        localStorage.removeItem('unoInGame');
+        resetGameState();
+        break;
 
-    if (message.action === 'start') {
-      clientLog(`start received, flushing actionQueue (was ${actionQueue.length})`);
-      hideDisconnectedToast();
-      flushQueue();
-      myId = message.id!;
-      localStorage.setItem('unoPlayerId', myId);
-      clientLog('[start] myId =', myId, 'players =', (message.players || []).map(p => ({ id: p.id, name: p.name })), 'turn =', message.turn);
-      lobbyDiv.style.display = 'none';
-      gameDiv.style.display = 'block';
-      players = message.players || [];
-      currentTurn = message.turn || 0;
-      gameDirection = message.direction || 1;
-      myHand = message.hand || [];
-      updatePlayers(players, currentTurn);
-      updateHand(myHand);
-      applyCardLayout();
-      updateDiscardPile(message.discardPile || []);
-      updateTurnIndicator();
-    }
+      case 'spectate_offer': {
+        const want = await showConfirm('该大厅对局已开始，是否进入观战模式？');
+        if (want) {
+          sendMessage({ action: 'spectate', lobbyId: message.lobbyId, name: nameInput.value });
+        } else {
+          nameInput.disabled = false;
+          lobbyIdInput.disabled = false;
+          joinButton.disabled = false;
+        }
+        return;
+      }
 
-    if (message.action === 'update') {
-      clientLog(`update received, flushing actionQueue (was ${actionQueue.length})`);
-      hideDisconnectedToast();
-      flushQueue();
-      clientLog('[update] myId =', myId, 'turn =', message.turn, 'players =', (message.players || []).map(p => ({ id: p.id, name: p.name })), 'current =', (message.players || [])[message.turn || 0] ? (message.players || [])[message.turn || 0].id : null);
-      players = message.players || [];
-      currentTurn = message.turn || 0;
-      gameDirection = message.direction || 1;
-      myHand = message.hand || [];
-      updatePlayers(players, currentTurn);
-      updateHand(myHand);
-      applyCardLayout();
-      updateDiscardPile(message.discardPile || []);
-      updateTurnIndicator();
-    }
+      case 'game_aborted':
+        if (isSpectating) {
+          localStorage.removeItem('unoInLobby');
+          localStorage.removeItem('unoInGame');
+          resetGameState();
+        } else {
+          showGameAborted();
+        }
+        break;
 
-    if (message.action === 'win') {
-      showGameOver(message.winner || '');
-    }
+      case 'dev_state_export':
+        clientLog('[dev_state_export]', JSON.stringify(message.log, null, 2));
+        showAlert('状态日志已输出到控制台');
+        break;
 
-    if (message.action === 'surrendered') {
-      localStorage.removeItem('unoInLobby');
-      localStorage.removeItem('unoInGame');
-      resetGameState();
-      return;
-    }
-
-    if (message.action === 'game_aborted') {
-      showGameAborted();
-    }
-
-    if (message.action === 'dev_state_export') {
-      clientLog('[dev_state_export]', JSON.stringify(message.log, null, 2));
-      showAlert('状态日志已输出到控制台');
-      return;
-    }
-
-    if (message.action === 'reaction') {
-      showReaction(message.playerId || '', message.type || '', message.content || '');
+      case 'reaction':
+        showReaction(message.playerId || '', message.type || '', message.content || '');
+        break;
     }
   };
 
@@ -444,7 +492,7 @@ function updateTurnIndicator(): void {
   clientLog('[turn] myId =', myId, 'currentPlayer.id =', currentPlayer ? currentPlayer.id : null, 'isMyTurn =', isMyTurn);
 
   if (isMyTurn) {
-    turnText.textContent = 'YOUR TURN';
+    turnText.textContent = 'YOU';
     turnIndicator.classList.add('my-turn');
     document.body.classList.remove('player-action-disabled');
   } else {
@@ -1052,6 +1100,14 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   lobbyIdInput.addEventListener('input', () => {
     localStorage.setItem('unoLobbyId', lobbyIdInput.value.toUpperCase());
+  });
+
+  getLeaveSpectateBtn()?.addEventListener('click', () => {
+    sendMessage({ action: 'leave' });
+    localStorage.removeItem('unoPlayerId');
+    localStorage.removeItem('unoInLobby');
+    localStorage.removeItem('unoInGame');
+    resetGameState();
   });
 });
 

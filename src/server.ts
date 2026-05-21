@@ -38,6 +38,7 @@ interface ClientMetadata {
   id: string;
   name?: string;
   lobbyId?: string | null;
+  isSpectator?: boolean;
 }
 
 interface SessionData {
@@ -640,14 +641,14 @@ function broadcastGameUpdate(lobbyId: string): void {
     const metadata = clients.get(client);
     if (metadata && metadata.lobbyId === lobbyId) {
       const player = lobby.players.find(p => p.id === metadata.id);
-      if (!player) return;
-      const message = {
+      const message: Record<string, unknown> = {
         action: 'update',
         players: sanitizePlayersForClient(lobby.players),
         discardPile: lobby.game.discardPile,
         turn: lobby.game.turn,
         direction: lobby.game.direction,
-        hand: player.hand
+        spectator: metadata.isSpectator || false,
+        hand: player ? player.hand : []
       };
 
       client.send(JSON.stringify(message));
@@ -742,7 +743,7 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
               }));
               return;
             }
-            ws.send(JSON.stringify(errorResponse('LOBBY_STARTED_JOIN')));
+            ws.send(JSON.stringify({ action: 'spectate_offer', lobbyId: lobby.id }));
             return;
           }
 
@@ -1050,25 +1051,61 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             return;
           }
 
-          // >2 players: remove from game, cards go to discard
-          if (surrenderPlayer.hand) {
-            sLobby.game.discardPile.push(...surrenderPlayer.hand);
+          // >2 players: offer spectate, only remove if declined
+          ws.send(JSON.stringify({ action: 'surrender_offer' }));
+          return;
+        }
+
+        case 'spectate_accept': {
+          const lobby = lobbies.get(metadata.lobbyId!);
+          if (!lobby || !lobby.game.started) return;
+          const player = lobby.players.find(p => p.id === metadata.id);
+          if (!player) return;
+          if (player.hand) lobby.game.discardPile.push(...player.hand);
+          const idx = lobby.players.indexOf(player);
+          if (idx === lobby.game.turn) {
+            lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
           }
-          const surrenderIdx = sLobby.players.indexOf(surrenderPlayer);
-          if (surrenderIdx === sLobby.game.turn) {
-            sLobby.game.turn = (sLobby.game.turn + sLobby.game.direction + sLobby.players.length) % sLobby.players.length;
+          lobby.players.splice(idx, 1);
+          if (idx < lobby.game.turn && lobby.players.length > 0) {
+            lobby.game.turn = (lobby.game.turn - 1 + lobby.players.length) % lobby.players.length;
           }
-          sLobby.players.splice(surrenderIdx, 1);
-          // If removed player was before current turn, adjust turn index
-          if (surrenderIdx < sLobby.game.turn && sLobby.players.length > 0) {
-            sLobby.game.turn = (sLobby.game.turn - 1 + sLobby.players.length) % sLobby.players.length;
+          sessions.delete(metadata.id);
+          metadata.isSpectator = true;
+          ws.send(JSON.stringify({
+            action: 'start',
+            id: metadata.id,
+            players: sanitizePlayersForClient(lobby.players),
+            discardPile: lobby.game.discardPile,
+            turn: lobby.game.turn,
+            direction: lobby.game.direction,
+            hand: [],
+            spectator: true
+          }));
+          checkGameAborted(metadata.lobbyId!, metadata.id);
+          broadcastGameUpdate(metadata.lobbyId!);
+          return;
+        }
+
+        case 'spectate': {
+          const lobby = lobbies.get(message.lobbyId!);
+          if (!lobby || !lobby.game.started) {
+            ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED')));
+            return;
           }
-          const lobbyId = metadata.lobbyId!;
-          metadata.lobbyId = null;
-          sessions.delete(surrenderPlayer.id);
-          ws.send(JSON.stringify({ action: 'surrendered' }));
-          checkGameAborted(lobbyId, metadata.id);
-          broadcastGameUpdate(lobbyId);
+          metadata.name = message.name;
+          metadata.lobbyId = message.lobbyId;
+          metadata.isSpectator = true;
+          ws.send(JSON.stringify({
+            action: 'start',
+            id: metadata.id,
+            players: sanitizePlayersForClient(lobby.players),
+            discardPile: lobby.game.discardPile,
+            turn: lobby.game.turn,
+            direction: lobby.game.direction,
+            hand: [],
+            spectator: true
+          }));
           return;
         }
 
@@ -1279,7 +1316,19 @@ function handleLeave(lobbyId: string, playerId: string): void {
   const playerIndex = lobby.players.findIndex(p => p.id === playerId);
   if (playerIndex > -1) {
     const player = lobby.players[playerIndex];
+    // If game started, put hand cards on discard pile
+    if (lobby.game.started && player.hand) {
+      lobby.game.discardPile.push(...player.hand);
+    }
+    // If it was this player's turn, advance
+    if (playerIndex === lobby.game.turn) {
+      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+    }
     lobby.players.splice(playerIndex, 1);
+    // Adjust turn if removed before current
+    if (playerIndex < lobby.game.turn && lobby.players.length > 0) {
+      lobby.game.turn = (lobby.game.turn - 1 + lobby.players.length) % lobby.players.length;
+    }
 
     if (player.isCreator) {
       const removedAIs = lobby.players.filter(p => p.isAI);

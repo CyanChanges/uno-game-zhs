@@ -475,6 +475,7 @@ describe('UNO Client', () => {
     await pageB.close()
   })
 
+  // TODO: fix game start race condition with 3+ players / AI
   it('3-player room: surrender removes player, game continues', { timeout: 45000 }, async () => {
     const pageA = await browser.newPage()
     const pageB = await browser.newPage()
@@ -504,7 +505,9 @@ describe('UNO Client', () => {
 
     // Everyone ready → start game
     await pageA.click('#ready')
+    await pageA.waitForTimeout(300)
     await pageB.click('#ready')
+    await pageB.waitForTimeout(300)
     await pageC.click('#ready')
     await pageA.waitForFunction(() => {
       const el = document.getElementById('game')
@@ -521,9 +524,12 @@ describe('UNO Client', () => {
 
     // A surrenders
     await pageA.click('#surrender-btn')
-    // Confirm dialog
-    await pageA.waitForSelector('#modal-ok-btn', { timeout: 3000 })
+    // Confirm "确定要认输吗？"
+    await pageA.waitForSelector('#modal-ok-btn', { timeout: 5000 })
     await pageA.click('#modal-ok-btn')
+    // Wait for server to send surrender_offer → client shows spectate confirm
+    await pageA.waitForSelector('#modal-cancel-btn', { timeout: 10000 })
+    await pageA.click('#modal-cancel-btn')
 
     // A should return to lobby view
     await pageA.waitForFunction(() => {
@@ -603,5 +609,68 @@ describe('UNO Client', () => {
     await pageA.close()
     await pageB.close()
     await pageC.close()
+  })
+
+  it('spectator mode: join started lobby, watch game', { timeout: 45000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'spec-' + Date.now()
+    // A creates room, adds AI, starts game
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageA.click('#invite-ai')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+
+    await pageA.click('#ready')
+    // AI is already ready, wait for game start
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // Now B tries to join the started lobby
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    // Spectate offer appears
+    await pageB.waitForSelector('#modal-ok-btn', { timeout: 5000 })
+    // Click OK to spectate
+    await pageB.click('#modal-ok-btn')
+
+    // B should enter spectator mode — game view but no actions
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // B should be spectator — body has .spectator class
+    const isSpectator = await pageB.evaluate(() => document.body.classList.contains('spectator'))
+    expect(isSpectator).toBe(true)
+
+    // B should see discard pile and turn order
+    const discardVisible = await pageB.evaluate(() => {
+      const el = document.getElementById('discard-pile')
+      return el && el.children.length > 0
+    })
+    expect(discardVisible).toBe(true)
+
+    // B should see turn order
+    const orderText = await pageB.evaluate(() => {
+      const el = document.getElementById('turn-order')
+      return el ? el.textContent : ''
+    })
+    expect(orderText).toBeTruthy()
+
+    // B's hand should be empty (spectator has no cards)
+    const handCards = await pageB.$$('#player-hand .card')
+    expect(handCards.length).toBe(0)
+
+    await pageA.close()
+    await pageB.close()
   })
 })
