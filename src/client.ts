@@ -545,7 +545,7 @@ function showLobbyInfo(lobbyId: string): void {
     const creator = players.find(p => p.isCreator);
     const lobbyInfoTitle = document.querySelector('#lobby-info h3');
     if (creator) {
-      lobbyInfoTitle!.innerHTML = `大厅：<span id="current-lobby-id">${encodeUGC(lobbyId)}</span><br><small style="font-size: 0.8em; opacity: 0.8;">由 ${encodeUGC(creator.name)} 创建 👑</small>`;
+      lobbyInfoTitle!.innerHTML = `大厅：<span id="current-lobby-id">${encodeUGC(lobbyId)}</span><br><small style="font-size: 0.8em; opacity: 0.8;">由 ${encodeUGC(creator.name)} 创建 <img src="/icons/crown.svg" style="width:1.2em;height:1.2em;vertical-align:text-bottom;"></small>`;
       // Re-add the click functionality to the new span
       const newLobbyIdSpan = document.getElementById('current-lobby-id')!;
       newLobbyIdSpan.style.cursor = 'pointer';
@@ -642,23 +642,24 @@ function updatePlayers(newPlayers: Player[], turn: number): void {
       playerDiv.classList.add('disconnected');
     }
 
-    let displayText = player.name;
+    let iconHtml = '';
     if (player.isCreator) {
-      displayText += ' 👑';
+      iconHtml += '<img src="/icons/crown.svg" style="width:1.2em;height:1.2em;vertical-align:text-bottom;margin-left:2px;">';
     }
     if (player.isAI) {
-      displayText += ' 🤖';
+      iconHtml += '<img src="/icons/robot.svg" style="width:1.2em;height:1.2em;vertical-align:text-bottom;margin-left:2px;">';
     }
+
+    let displayText = player.name;
     if (player.disconnected && player.reconnectDeadline) {
       const remaining = Math.max(0, Math.ceil((player.reconnectDeadline - Date.now()) / 1000));
       displayText += ` · 重连中 ${remaining}s`;
     }
 
-    // `textContent` is safe
     if (player.cardCount !== undefined && player.id !== myId) {
-      playerDiv.textContent = `${displayText}（${player.cardCount} 张牌）`;
+      playerDiv.innerHTML = `${encodeUGC(displayText)}${iconHtml}（${player.cardCount} 张牌）`;
     } else {
-      playerDiv.textContent = displayText;
+      playerDiv.innerHTML = `${encodeUGC(displayText)}${iconHtml}`;
     }
 
     playerDiv.dataset.playerId = player.id;
@@ -675,14 +676,12 @@ function updatePlayers(newPlayers: Player[], turn: number): void {
     const nameSpan = document.createElement('span');
     nameSpan.classList.add('player-name');
     let nameText = player.name;
-    if (player.isCreator) nameText += ' 👑';
-    if (player.isAI) nameText += ' 🤖';
     if (player.ready) nameText += '（已准备）';
     if (player.disconnected && player.reconnectDeadline) {
       const remaining = Math.max(0, Math.ceil((player.reconnectDeadline - Date.now()) / 1000));
       nameText += ` · 重连中 ${remaining}s`;
     }
-    nameSpan.textContent = nameText;
+    nameSpan.innerHTML = `${encodeUGC(nameText)}${iconHtml}`;
     if (i === turn) nameSpan.style.fontWeight = 'bold';
     li.appendChild(nameSpan);
 
@@ -1047,9 +1046,11 @@ readyButton.addEventListener('click', () => {
     return;
   }
   readyButton.disabled = true;
-  readyButton.textContent = '...';
+  // readyButton.textContent = '...';
   clientLog(`ready click, sending, isDisconnected=${isDisconnected}`);
-  sendMessage({ action: 'ready' });
+  if (sendMessage({ action: 'ready' })) {
+    updateReadyButton()
+  };
 });
 
 drawCardButton.addEventListener('click', () => {
@@ -1302,13 +1303,13 @@ function showGameOver(winnerName: string): void {
   const myName = localStorage.getItem('unoPlayerName') || '';
 
   if (isWinner) {
-    gameOverIcon.textContent = '🏆';
+    gameOverIcon.innerHTML = '<img src="/icons/trophy.svg" style="width:64px;height:64px;">';
     gameOverTitle.textContent = '你赢了！';
-    gameOverMessage.textContent = `🎉 ${encodeUGC(winnerName)} 赢得了游戏！干得漂亮！`;
+    gameOverMessage.innerHTML = `<img src="/icons/party.svg" style="width:1em;height:1em;vertical-align:middle;"> ${encodeUGC(winnerName)} 赢得了游戏！干得漂亮！`;
     gameOverContent.className = 'win';
     spawnConfetti();
   } else {
-    gameOverIcon.textContent = '💔';
+    gameOverIcon.innerHTML = '<img src="/icons/heartbreak.svg" style="width:64px;height:64px;">';
     gameOverTitle.textContent = '游戏结束';
     gameOverMessage.textContent = `${encodeUGC(winnerName)} 赢得了游戏！\n下次加油，${encodeUGC(myName)}！`;
     gameOverContent.className = 'lose';
@@ -1324,7 +1325,7 @@ function showGameAborted(): void {
   localStorage.removeItem('unoInLobby');
   localStorage.removeItem('unoInGame');
 
-  gameOverIcon.textContent = '⚡';
+  gameOverIcon.innerHTML = '<img src="/icons/bolt.svg" style="width:64px;height:64px;">';
   gameOverTitle.textContent = '对局中止';
   gameOverMessage.textContent = '其他玩家离开了对局，游戏已结束';
   gameOverContent.className = 'aborted';
@@ -1339,8 +1340,17 @@ function showReaction(playerId: string, type: string, content: string): void {
 
   const popup = document.createElement('div');
   popup.classList.add('reaction-popup');
-  if (type === 'text') popup.classList.add('reaction-popup-text');
-  popup.textContent = content;
+  if (type === 'text') {
+    popup.classList.add('reaction-popup-text');
+    popup.textContent = content;
+  } else {
+    const iconMap: Record<string, string> = {
+      '😂': 'laugh', '😡': 'angry', '😱': 'shock', '👍': 'like',
+      '👎': 'dislike', '🎉': 'party', '😭': 'cry', '🔥': 'fire'
+    };
+    const icon = iconMap[content] || 'laugh';
+    popup.innerHTML = `<img src="/icons/${icon}.svg" style="width:32px;height:32px;">`;
+  }
 
   let width = 0;
   for (const ch of content) {

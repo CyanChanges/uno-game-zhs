@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { Server, IncomingMessage, ServerResponse } from 'http';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { decideMove } from './aiplayer';
 import { ERR, errorResponse, ErrorCode } from './errors';
@@ -107,11 +107,31 @@ const httpServer = new Server((req: IncomingMessage, res: ServerResponse) => {
     return res.end(JSON.stringify(ERR));
   }
 
+  // Serve icon SVGs from /icons/ path or static icons directory
+  if (url.startsWith('/icons/')) {
+    const iconFile = filename.slice(6); // remove "icons/"
+    if (iconFile) {
+      try {
+        let iconPath = path.join(__dirname, 'icons', iconFile);
+        if (!existsSync(iconPath)) {
+          iconPath = path.join(__dirname, '..', 'public', 'icons', iconFile);
+        }
+        const content = readFileSync(iconPath);
+        res.setHeader('Content-Type', 'image/svg+xml');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        return res.end(content);
+      } catch (_e) { /* fall through */ }
+    }
+  }
+
   if (!!filename && filename in files) {
     const { content, type } = files[filename];
     res.setHeader('Content-Type', type);
     return res.end(content);
   }
+
+  res.statusCode = 404
+  return res.end()
 });
 
 httpServer.on('upgrade', (request: IncomingMessage, socket: import('net').Socket, head: Buffer) => {

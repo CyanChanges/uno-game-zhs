@@ -882,7 +882,7 @@ body.spectator #turn-indicator::after {
 }
 
 .player.uno::after {
-    content: " 🎯 UNO!";
+    content: " UNO!";
     color: #ff4500;
     font-weight: bold;
 }
