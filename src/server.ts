@@ -335,6 +335,7 @@ function startGame(lobbyId: string): void {
         players: sanitizePlayersForClient(lobby.players),
         discardPile: lobby.game.discardPile,
         turn: lobby.game.turn,
+        direction: lobby.game.direction,
         hand: player.hand,
         id: metadata.id
       };
@@ -487,12 +488,12 @@ function handlePlayMultiple(lobbyId: string, playerId: string, cards: Card[]): v
     const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
     const nextPlayer = lobby.players[nextPlayerIndex];
     nextPlayer.hand!.push(...drawCardsFromDeck(lobby, lobbyId, 2 * cardCount));
-    lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
+    lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
   } else if (lastCard.type === 'wild4') {
     const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
     const nextPlayer = lobby.players[nextPlayerIndex];
     nextPlayer.hand!.push(...drawCardsFromDeck(lobby, lobbyId, 4 * cardCount));
-    lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
+    lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
   } else {
     lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
   }
@@ -538,13 +539,13 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
       const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
       const nextPlayer = lobby.players[nextPlayerIndex];
       nextPlayer.hand!.push(...drawCardsFromDeck(lobby, lobbyId, 2));
-      lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
+      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
     } else if (card.type === 'wild' || card.type === 'wild4') {
       if (card.type === 'wild4') {
         const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
         const nextPlayer = lobby.players[nextPlayerIndex];
         nextPlayer.hand!.push(...drawCardsFromDeck(lobby, lobbyId, 4));
-        lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
+        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
       } else {
         lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
       }
@@ -645,6 +646,7 @@ function broadcastGameUpdate(lobbyId: string): void {
         players: sanitizePlayersForClient(lobby.players),
         discardPile: lobby.game.discardPile,
         turn: lobby.game.turn,
+        direction: lobby.game.direction,
         hand: player.hand
       };
 
@@ -735,14 +737,12 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
                 players: sanitizePlayersForClient(lobby.players),
                 discardPile: lobby.game.discardPile,
                 turn: lobby.game.turn,
+                direction: lobby.game.direction,
                 hand: disconnectedPlayer.hand
               }));
               return;
             }
-            ws.send(JSON.stringify({
-              action: 'error',
-              message: ERR.LOBBY_STARTED_JOIN
-            } as const));
+            ws.send(JSON.stringify(errorResponse('LOBBY_STARTED_JOIN')));
             return;
           }
 
@@ -986,6 +986,7 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
                 players: sanitizePlayersForClient(rLobby!.players),
                 discardPile: rLobby!.game.discardPile,
                 turn: rLobby!.game.turn,
+                direction: rLobby!.game.direction,
                 hand: player.hand
               }));
             }
@@ -1040,11 +1041,34 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           if (!sLobby || !sLobby.game.started) return;
           const surrenderPlayer = sLobby.players.find(p => p.id === metadata.id);
           if (!surrenderPlayer) return;
-          const winner = sLobby.players.find(p => p.id !== metadata.id && !p.isAI)
-            || sLobby.players.find(p => p.id !== metadata.id);
-          if (winner) {
-            broadcastWin(metadata.lobbyId!, winner.name);
+
+          const remaining = sLobby.players.filter(p => p.id !== metadata.id);
+          // 2-player room: surrender = opponent wins (original behavior)
+          if (remaining.length <= 1) {
+            const winner = remaining.find(p => !p.isAI) || remaining[0];
+            if (winner) broadcastWin(metadata.lobbyId!, winner.name);
+            return;
           }
+
+          // >2 players: remove from game, cards go to discard
+          if (surrenderPlayer.hand) {
+            sLobby.game.discardPile.push(...surrenderPlayer.hand);
+          }
+          const surrenderIdx = sLobby.players.indexOf(surrenderPlayer);
+          if (surrenderIdx === sLobby.game.turn) {
+            sLobby.game.turn = (sLobby.game.turn + sLobby.game.direction + sLobby.players.length) % sLobby.players.length;
+          }
+          sLobby.players.splice(surrenderIdx, 1);
+          // If removed player was before current turn, adjust turn index
+          if (surrenderIdx < sLobby.game.turn && sLobby.players.length > 0) {
+            sLobby.game.turn = (sLobby.game.turn - 1 + sLobby.players.length) % sLobby.players.length;
+          }
+          const lobbyId = metadata.lobbyId!;
+          metadata.lobbyId = null;
+          sessions.delete(surrenderPlayer.id);
+          ws.send(JSON.stringify({ action: 'surrendered' }));
+          checkGameAborted(lobbyId, metadata.id);
+          broadcastGameUpdate(lobbyId);
           return;
         }
 

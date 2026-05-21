@@ -57,6 +57,8 @@ const modalOkBtn = document.getElementById('modal-ok-btn');
 const modalCancelBtn = document.getElementById('modal-cancel-btn');
 
 function showAlert(msg) {
+    console.debug('showAlert', msg)
+
     return new Promise(resolve => {
         modalCancelBtn.style.display = 'none';
         modalMessage.textContent = msg;
@@ -76,6 +78,8 @@ function showAlert(msg) {
 }
 
 function showConfirm(msg) {
+    console.debug('showConfirm', msg)
+
     return new Promise(resolve => {
         modalCancelBtn.style.display = '';
         modalMessage.textContent = msg;

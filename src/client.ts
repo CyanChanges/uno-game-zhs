@@ -50,6 +50,7 @@ interface ServerMessage {
   reconnectLost?: boolean;
   players?: Player[];
   turn?: number;
+  direction?: number;
   lobbyId?: string;
   hand?: Card[];
   discardPile?: Card[];
@@ -98,6 +99,7 @@ function getErrorDef(key: string): ErrorDef | undefined {
 let myId: string | null = null;
 let ws: WebSocket | null = null;
 let currentTurn = -1;
+let gameDirection = 1;
 let players: Player[] = [];
 let pendingWildCard: Card | Card[] | null = null;
 let selectedCards: SavedSelection[] = [];
@@ -283,6 +285,7 @@ function connect(): void {
       hideDisconnectedToast();
       players = message.players || [];
       currentTurn = message.turn || 0;
+      gameDirection = message.direction || 1;
       myLobbyId = message.lobbyId || null;
       localStorage.setItem('unoPlayerId', myId!);
       localStorage.setItem('unoInLobby', '1');
@@ -304,6 +307,7 @@ function connect(): void {
       gameDiv.style.display = 'block';
       players = message.players || [];
       currentTurn = message.turn || 0;
+      gameDirection = message.direction || 1;
       myHand = message.hand || [];
       updatePlayers(players, currentTurn);
       updateHand(myHand);
@@ -319,6 +323,7 @@ function connect(): void {
       clientLog('[update] myId =', myId, 'turn =', message.turn, 'players =', (message.players || []).map(p => ({ id: p.id, name: p.name })), 'current =', (message.players || [])[message.turn || 0] ? (message.players || [])[message.turn || 0].id : null);
       players = message.players || [];
       currentTurn = message.turn || 0;
+      gameDirection = message.direction || 1;
       myHand = message.hand || [];
       updatePlayers(players, currentTurn);
       updateHand(myHand);
@@ -329,6 +334,13 @@ function connect(): void {
 
     if (message.action === 'win') {
       showGameOver(message.winner || '');
+    }
+
+    if (message.action === 'surrendered') {
+      localStorage.removeItem('unoInLobby');
+      localStorage.removeItem('unoInGame');
+      resetGameState();
+      return;
     }
 
     if (message.action === 'game_aborted') {
@@ -431,15 +443,48 @@ function updateTurnIndicator(): void {
 
   clientLog('[turn] myId =', myId, 'currentPlayer.id =', currentPlayer ? currentPlayer.id : null, 'isMyTurn =', isMyTurn);
 
-  // `textContent` is safe
   if (isMyTurn) {
-    turnText.textContent = 'YOU';
+    turnText.textContent = 'YOUR TURN';
     turnIndicator.classList.add('my-turn');
     document.body.classList.remove('player-action-disabled');
   } else {
     turnText.textContent = `${currentPlayer ? currentPlayer.name : '-'}的回合`;
     turnIndicator.classList.remove('my-turn');
     document.body.classList.add('player-action-disabled');
+  }
+
+  // Build turn order display
+  let orderEl = document.getElementById('turn-order');
+  if (!orderEl) {
+    orderEl = document.createElement('div');
+    orderEl.id = 'turn-order';
+    opponentHandsDiv.insertAdjacentElement('beforebegin', orderEl);
+  }
+  orderEl.innerHTML = '';
+
+  for (let i = 0; i < players.length; i++) {
+    const p = players[i];
+
+    const pill = document.createElement('span');
+    pill.classList.add('turn-order-pill');
+    if (i === currentTurn) pill.classList.add('current');
+    if (p.isAI) pill.classList.add('ai');
+    if (p.disconnected) pill.classList.add('disconnected');
+    pill.textContent = p.name;
+    orderEl.appendChild(pill);
+
+    if (i < players.length - 1) {
+      const arrow = document.createElement('span');
+      arrow.classList.add('turn-order-arrow');
+      arrow.textContent = gameDirection === 1 ? ' ▸ ' : ' ◂ ';
+      orderEl.appendChild(arrow);
+    }
+  }
+
+  if (lobbyDiv.style.display !== 'none') {
+    orderEl.style.display = 'none';
+  } else {
+    orderEl.style.display = '';
   }
 }
 
@@ -999,6 +1044,14 @@ document.addEventListener('DOMContentLoaded', () => {
   reactionSendBtn.addEventListener('click', sendReactionText);
   reactionTextInput.addEventListener('keydown', (e: KeyboardEvent) => {
     if (e.key === 'Enter') sendReactionText();
+  });
+
+  // Save name/lobby ID to localStorage on each keystroke
+  nameInput.addEventListener('input', () => {
+    localStorage.setItem('unoPlayerName', nameInput.value);
+  });
+  lobbyIdInput.addEventListener('input', () => {
+    localStorage.setItem('unoLobbyId', lobbyIdInput.value.toUpperCase());
   });
 });
 

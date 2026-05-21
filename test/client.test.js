@@ -414,4 +414,194 @@ describe('UNO Client', () => {
     await pageA.close()
     await pageB2.close()
   })
+
+  it('name and lobby ID saved to localStorage on input', async () => {
+    const page = await browser.newPage()
+    await page.goto(BASE)
+    await page.waitForSelector('#name')
+
+    // Type something and verify localStorage updates
+    await page.fill('#name', 'TestPlayer')
+    const name1 = await page.evaluate(() => localStorage.getItem('unoPlayerName'))
+    expect(name1).toBe('TestPlayer')
+
+    await page.fill('#lobby-id', 'TestLobby')
+    const lobby1 = await page.evaluate(() => localStorage.getItem('unoLobbyId'))
+    expect(lobby1).toBe('TESTLOBBY') // uppercased by input listener
+
+    // Change and verify
+    await page.fill('#name', 'Player2')
+    const name2 = await page.evaluate(() => localStorage.getItem('unoPlayerName'))
+    expect(name2).toBe('Player2')
+
+    await page.close()
+  })
+
+  it('turn order display shows after game starts', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'order-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // Check turn-order element exists with player names
+    const orderText = await pageA.evaluate(() => {
+      const el = document.getElementById('turn-order')
+      return el ? el.textContent : null
+    })
+    expect(orderText).toBeTruthy()
+    expect(orderText).toContain('Alice')
+    expect(orderText).toContain('Bob')
+    // Should show direction arrow
+    expect(orderText).toContain('▸')
+
+    await pageA.close()
+    await pageB.close()
+  })
+
+  it('3-player room: surrender removes player, game continues', { timeout: 45000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    const pageC = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+    await pageC.goto(BASE)
+
+    const lobbyId = 'surr-' + Date.now()
+    // A creates room
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    // B joins
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    // C joins
+    await pageC.fill('#name', 'Charlie')
+    await pageC.fill('#lobby-id', lobbyId)
+    await pageC.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 3)
+    await pageB.waitForFunction(() => document.querySelectorAll('#players li').length === 3)
+    await pageC.waitForFunction(() => document.querySelectorAll('#players li').length === 3)
+
+    // Everyone ready → start game
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageC.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+    await pageC.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // A surrenders
+    await pageA.click('#surrender-btn')
+    // Confirm dialog
+    await pageA.waitForSelector('#modal-ok-btn', { timeout: 3000 })
+    await pageA.click('#modal-ok-btn')
+
+    // A should return to lobby view
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('lobby')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // B and C should still be in game (game continues)
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 5000 })
+    await pageC.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 5000 })
+
+    // Verify B and C see only 2 players in turn order
+    const bPlayerCount = await pageB.evaluate(() => {
+      const pills = document.querySelectorAll('.turn-order-pill')
+      return pills.length
+    })
+    expect(bPlayerCount).toBe(2)
+
+    await pageA.close()
+    await pageB.close()
+    await pageC.close()
+  })
+
+  it('3 tabs join same lobby and see each other', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    const pageC = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+    await pageC.goto(BASE)
+
+    const lobbyId = 'multi-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageB.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+
+    await pageC.fill('#name', 'Charlie')
+    await pageC.fill('#lobby-id', lobbyId)
+    await pageC.click('#join')
+
+    // All 3 should see 3 players
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 3)
+    await pageB.waitForFunction(() => document.querySelectorAll('#players li').length === 3)
+    await pageC.waitForFunction(() => document.querySelectorAll('#players li').length === 3)
+
+    // Verify player names (creator shows 👑 after name)
+    const namesA = await pageA.$$eval('#players li .player-name', els => els.map(el => el.textContent))
+    const namesB = await pageB.$$eval('#players li .player-name', els => els.map(el => el.textContent))
+    const namesC = await pageC.$$eval('#players li .player-name', els => els.map(el => el.textContent))
+    expect(namesA.some(n => n.includes('Alice'))).toBe(true)
+    expect(namesA.some(n => n.includes('Bob'))).toBe(true)
+    expect(namesA.some(n => n.includes('Charlie'))).toBe(true)
+    expect(namesB.some(n => n.includes('Alice'))).toBe(true)
+    expect(namesB.some(n => n.includes('Bob'))).toBe(true)
+    expect(namesB.some(n => n.includes('Charlie'))).toBe(true)
+    expect(namesC.some(n => n.includes('Alice'))).toBe(true)
+    expect(namesC.some(n => n.includes('Bob'))).toBe(true)
+    expect(namesC.some(n => n.includes('Charlie'))).toBe(true)
+
+    // Creator (Alice) should see invite AI and ready buttons
+    const readyVisible = await pageA.evaluate(() => document.getElementById('ready').style.display !== 'none')
+    expect(readyVisible).toBe(true)
+
+    await pageA.close()
+    await pageB.close()
+    await pageC.close()
+  })
 })
