@@ -732,4 +732,69 @@ describe('UNO Client', () => {
     await pageA.close()
     await pageB.close()
   })
+
+  it('non-matching cards have no hover lift, matching cards do', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageA.waitForSelector('#name')
+
+    const lobbyId = 'hover-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+
+    // Invite AI and start game (AI is always ready)
+    await pageA.click('#invite-ai')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // Get discard pile top card info
+    const topInfo = await pageA.evaluate(() => {
+      const card = document.querySelector('#discard-pile .card')
+      return {
+        color: card ? card.getAttribute('data-color') : null,
+        type: card ? card.getAttribute('data-type') : null
+      }
+    })
+    expect(topInfo.color).toBeTruthy()
+    expect(topInfo.type).toBeTruthy()
+
+    // All cards in hand should have proper playable/non-playable marking
+    const result = await pageA.evaluate((top) => {
+      const cards = document.querySelectorAll('#player-hand .card')
+      let matchingCount = 0
+      let nonMatchingCount = 0
+      let wildCount = 0
+      for (let i = 0; i < cards.length; i++) {
+        const c = cards[i]
+        const cColor = c.getAttribute('data-color')
+        const cType = c.getAttribute('data-type')
+        const isWild = cType === 'wild' || cType === 'wild4'
+        const matches = isWild || cColor === top.color || cType === top.type
+        const hasNotPlayable = c.classList.contains('not-playable')
+
+        if (isWild) {
+          wildCount++
+          if (hasNotPlayable) return { error: 'wild card should not be not-playable' }
+        } else if (matches) {
+          matchingCount++
+          if (hasNotPlayable) return { error: 'matching card should not be not-playable' }
+        } else {
+          nonMatchingCount++
+          if (!hasNotPlayable) return { error: 'non-matching card should be not-playable' }
+        }
+      }
+      return { matchingCount, nonMatchingCount, wildCount }
+    }, topInfo)
+
+    expect(result.error).toBeUndefined()
+    expect(result.nonMatchingCount).toBeGreaterThan(0)
+
+    await pageA.close()
+  })
 })

@@ -314,9 +314,9 @@ function connect(): void {
         gameDirection = message.direction || 1;
         myHand = message.hand || [];
         updatePlayers(players, currentTurn);
+        updateDiscardPile(message.discardPile || []);
         updateHand(myHand);
         applyCardLayout();
-        updateDiscardPile(message.discardPile || []);
         updateTurnIndicator();
         const _btn0 = getLeaveSpectateBtn(); if (_btn0) _btn0.style.display = isSpectating ? '' : 'none';
         document.body.classList.toggle('spectator', isSpectating);
@@ -337,9 +337,9 @@ function connect(): void {
         gameDirection = message.direction || 1;
         myHand = message.hand || [];
         updatePlayers(players, currentTurn);
+        updateDiscardPile(message.discardPile || []);
         updateHand(myHand);
         applyCardLayout();
-        updateDiscardPile(message.discardPile || []);
         updateTurnIndicator();
         break;
 
@@ -745,16 +745,26 @@ function updatePlayers(newPlayers: Player[], turn: number): void {
 function updateHand(hand: Card[]): void {
   playerHandDiv.innerHTML = '';
 
+  // Determine which cards are playable against the top discard
+  const discardCard = discardPileDiv.querySelector('.card');
+  const topColor = discardCard ? discardCard.getAttribute('data-color') : null;
+  const topType = discardCard ? discardCard.getAttribute('data-type') : null;
+
   for (let i = 0; i < hand.length; i++) {
     const card = hand[i];
     const cardDiv = createCard(card);
 
-    // Add card index for identification
     cardDiv.dataset.cardIndex = String(i);
 
-    // Check if card is selected
     if (selectedCards.some(selected => selected.index === i)) {
       cardDiv.classList.add('selected');
+    }
+
+    // Mark non-playable cards (no hover lift)
+    if (topColor && topType) {
+      const playable = card.type === 'wild' || card.type === 'wild4' ||
+        card.color === topColor || card.type === topType;
+      if (!playable) cardDiv.classList.add('not-playable');
     }
 
     cardDiv.addEventListener('click', () => handleCardClick(card, i, hand));

@@ -8,5 +8,5 @@
     "rootDir": "src",
     "types": ["node"]
   },
-  "include": ["src/server.ts", "src/aiplayer.ts", "src/errors.ts"]
+  "include": ["src/server.ts", "src/aiplayer.ts", "src/errors.ts", "src/constants.ts"]
 }

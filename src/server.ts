@@ -4,6 +4,7 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { decideMove } from './aiplayer';
 import { ERR, errorResponse, ErrorCode } from './errors';
+import { RECONNECT_DEFER_MS, RECONNECT_DEADLINE_MS, DISCONNECT_REMOVE_MS, MAX_HAND_CARDS } from './constants';
 
 interface Card {
   color?: string;
@@ -562,7 +563,6 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
   }
 }
 
-const MAX_HAND_CARDS = 100;
 
 function handleDraw(lobbyId: string, playerId: string): void {
   const lobby = lobbies.get(lobbyId);
@@ -1249,7 +1249,7 @@ function scheduleProcessClose(playerId: string, ws: WebSocket, metadata: ClientM
   const deferTimer = setTimeout(() => {
     deferTimers.delete(deferKey);
     processClose(ws, metadata);
-  }, 500);
+  }, RECONNECT_DEFER_MS);
   deferTimers.set(deferKey, deferTimer);
 }
 
@@ -1259,7 +1259,7 @@ function processClose(_ws: WebSocket, metadata: ClientMetadata): void {
   const player = lobby.players.find(p => p.id === metadata.id);
   if (!player) return;
   player.disconnected = true;
-  player.reconnectDeadline = Date.now() + 15000;
+  player.reconnectDeadline = Date.now() + RECONNECT_DEADLINE_MS;
   broadcastPlayers(metadata.lobbyId!);
   if (lobby.game.started) {
     broadcastGameUpdate(metadata.lobbyId!);
@@ -1286,7 +1286,7 @@ function processClose(_ws: WebSocket, metadata: ClientMetadata): void {
       broadcastPlayers(metadata.lobbyId!);
       if (lobby.players.length === 0) lobbies.delete(metadata.lobbyId!);
     }
-  }, 15000);
+  }, RECONNECT_DEADLINE_MS);
   reconnectTimers.set(player.id, reconnectTimer);
   const timer = setTimeout(() => {
     disconnectTimers.delete(player.id);
@@ -1307,7 +1307,7 @@ function processClose(_ws: WebSocket, metadata: ClientMetadata): void {
       }
       if (lobby.players.length === 0) lobbies.delete(metadata.lobbyId!);
     }
-  }, 30000);
+  }, DISCONNECT_REMOVE_MS);
   disconnectTimers.set(player.id, timer);
 }
 
