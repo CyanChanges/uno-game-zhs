@@ -947,21 +947,35 @@ body.player-action-disabled #center-area {
     pointer-events: none;
     user-select: none;
     -webkit-user-select: none;
+    cursor: not-allowed;
 }
+
 body.player-action-disabled #surrender-btn {
     pointer-events: auto;
+    cursor: pointer;
 }
-    opacity: 0.6;
+
+body.player-action-disabled #leave-spectate-btn {
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+body.player-action-disabled #draw-card {
+    pointer-events: none;
+    cursor: not-allowed;
 }
 
 body.player-action-disabled #player-hand-area {
     user-select: none;
     -webkit-user-select: none;
     opacity: 0.6;
+    cursor: not-allowed;
 }
 
 body.player-action-disabled #player-hand .card {
     pointer-events: none;
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 #card-controls {
