@@ -66,7 +66,7 @@ describe('UNO Client', () => {
       return items.length === 2
     })
 
-    // Alice clicks ready → should show (已准备)
+    // Alice clicks ready >> should show (已准备)
     await pageA.click('#ready')
     await pageA.waitForFunction(() => {
       const items = document.querySelectorAll('#players li')
@@ -91,7 +91,7 @@ describe('UNO Client', () => {
     const aliceName1 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
     expect(aliceName1).toContain('（已准备）')
 
-    // Alice clicks ready again → should toggle to NOT ready
+    // Alice clicks ready again >> should toggle to NOT ready
     await pageA.click('#ready')
     await pageA.waitForFunction(() => {
       const items = document.querySelectorAll('#players li')
@@ -105,7 +105,7 @@ describe('UNO Client', () => {
     await pageA.close()
   })
 
-  it('full flow: B disconnects → A readies (stays ready) → B reconnects → B readies → game starts', { timeout: 45000 }, async () => {
+  it('full flow: B disconnects >> A readies (stays ready) >> B reconnects >> B readies >> game starts', { timeout: 45000 }, async () => {
     const pageA = await browser.newPage()
     const pageB = await browser.newPage()
     await pageA.goto(BASE)
@@ -169,7 +169,7 @@ describe('UNO Client', () => {
     const aliceReady2 = await pageA.$eval('#players li:first-child .player-name', el => el.textContent)
     expect(aliceReady2).toContain('（已准备）')
 
-    // 7. B clicks ready → game starts
+    // 7. B clicks ready >> game starts
     await pageB2.click('#ready')
 
     // Wait for game to appear for both players
@@ -225,7 +225,7 @@ describe('UNO Client', () => {
       await pageA.waitForTimeout(500)
     }
 
-    // A draws → gets 1 card (normal draw, < 100 cards)
+    // A draws >> gets 1 card (normal draw, < 100 cards)
     const aBefore = await getCardCount(pageA)
     await pageA.click('#draw-card')
     await pageA.waitForTimeout(500)
@@ -285,14 +285,14 @@ describe('UNO Client', () => {
     await pageA.waitForTimeout(500)
 
     // A: use dev_add_all_cards to get the full deck (no reserve, gives all 93 remaining)
-    //     A already has 7 cards → total 7 + 93 = 100. Deck=0, Discard=2
+    //     A already has 7 cards >> total 7 + 93 = 100. Deck=0, Discard=2
     await pageA.evaluate(() => { sendMessage({ action: 'dev_add_all_cards' }); })
     await pageA.waitForTimeout(500)
 
     const aBeforeDraw = await getCardCount(pageA)
     expect(aBeforeDraw).toBeGreaterThanOrEqual(100)
 
-    // Step 3: A clicks draw → should skip (>= MAX_HAND_CARDS), hand stays same, turn passes to B
+    // Step 3: A clicks draw >> should skip (>= MAX_HAND_CARDS), hand stays same, turn passes to B
     await pageA.click('#draw-card')
     await pageA.waitForTimeout(800)
     await pageB.waitForFunction(() => {
@@ -302,7 +302,7 @@ describe('UNO Client', () => {
     const aAfterSkip = await getCardCount(pageA)
     expect(aAfterSkip).toBe(aBeforeDraw)
 
-    // Step 4: B draws → discard has 2 cards → reshuffle gives B a card
+    // Step 4: B draws >> discard has 2 cards >> reshuffle gives B a card
     const bBeforeDraw = await getCardCount(pageB)
     await pageB.click('#draw-card')
     await pageB.waitForTimeout(500)
@@ -313,13 +313,13 @@ describe('UNO Client', () => {
     const bAfterDraw = await getCardCount(pageB)
     expect(bAfterDraw).toBeGreaterThan(bBeforeDraw)
 
-    // Step 5: A removes 1 card (simulates playing a card) → A < 100
+    // Step 5: A removes 1 card (simulates playing a card) >> A < 100
     await pageA.evaluate(() => { sendMessage({ action: 'dev_remove_cards', count: 1 }); })
     await pageA.waitForTimeout(500)
     const aBeforeDraw2 = await getCardCount(pageA)
     expect(aBeforeDraw2).toBeLessThan(100)
 
-    // Step 6: A clicks draw → should now get +1 card
+    // Step 6: A clicks draw >> should now get +1 card
     await pageA.click('#draw-card')
     await pageA.waitForTimeout(500)
     await pageB.waitForFunction(() => {
@@ -562,7 +562,7 @@ describe('UNO Client', () => {
     await pageB.waitForFunction(() => document.querySelectorAll('#players li').length === 3)
     await pageC.waitForFunction(() => document.querySelectorAll('#players li').length === 3)
 
-    // Everyone ready → start game
+    // Everyone ready >> start game
     await pageA.click('#ready')
     await pageA.waitForTimeout(300)
     await pageB.click('#ready')
@@ -586,7 +586,7 @@ describe('UNO Client', () => {
     // Confirm "确定要认输吗？"
     await pageA.waitForSelector('#modal-ok-btn', { timeout: 5000 })
     await pageA.click('#modal-ok-btn')
-    // Wait for server to send surrender_offer → client shows spectate confirm
+    // Wait for server to send surrender_offer >> client shows spectate confirm
     await pageA.waitForSelector('#modal-cancel-btn', { timeout: 10000 })
     await pageA.click('#modal-cancel-btn')
 

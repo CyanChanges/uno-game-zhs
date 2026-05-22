@@ -604,7 +604,7 @@ describe('UNO Server', () => {
     const lobby = lobbiesRef.get('r')
     const aliceId = lobby.players[0].id
 
-    // Same name + matching UUID → allowed
+    // Same name + matching UUID >> allowed
     const b = await trackedWs(port)
     await b.next()
     send(b.ws, { action: 'join', name: 'Alice', lobbyId: 'r', playerId: aliceId })
@@ -946,7 +946,7 @@ describe('UNO Server', () => {
     // Give Alice all deck cards (99 after reserve) then push to >= 100
     send(a.ws, { action: 'dev_add_all_cards' })
     await a.next()
-    send(a.ws, { action: 'dev_add_cards', count: 1 }) // reshuffles the reserved card → Alice 100
+    send(a.ws, { action: 'dev_add_cards', count: 1 }) // reshuffles the reserved card >> Alice 100
     await a.next()
 
     const lobby = lobbiesRef.get('r')
@@ -954,7 +954,7 @@ describe('UNO Server', () => {
     const bobHand = lobby.players[1].hand.length
     expect(aliceHand >= 100).toBe(true)
 
-    // Alice draws → >= 100, skips turn, hand unchanged
+    // Alice draws >> >= 100, skips turn, hand unchanged
     send(a.ws, { action: 'draw' })
     const u1 = await a.next()
     expect(u1.action).toBe('update')
@@ -962,7 +962,7 @@ describe('UNO Server', () => {
     expect(u1.turn).toBe(1)
     expect(lobby.players[0].hand.length).toBe(aliceHand)
 
-    // Bob draws → deck empty, discard < 2 → pass turn, neither changes
+    // Bob draws >> deck empty, discard < 2 >> pass turn, neither changes
     send(b.ws, { action: 'draw' })
     const u2 = await a.next()
     expect(u2.action).toBe('update')
@@ -1091,7 +1091,7 @@ describe('UNO Server', () => {
     // Alice receives players update confirming Bob left
     const msg = await a.next()
     expect(msg.action).toBe('players')
-    // Bob left, but Alice still there → game should continue
+    // Bob left, but Alice still there >> game should continue
     const lobby = lobbiesRef.get('r')
     expect(lobby.game.started).toBe(true)
     expect(lobby.players.length).toBe(1)
@@ -1244,7 +1244,7 @@ describe('UNO Server', () => {
     send(a.ws, { action: 'ai_ready', playerId: aiId })
     const msg = await a.next()
     expect(msg.players).toHaveLength(2)
-    expect(msg.players[1].ready).toBe(false) // toggled off (was true→false)
+    expect(msg.players[1].ready).toBe(false) // toggled off (was true>>false)
     a.close()
   })
 
@@ -1281,7 +1281,7 @@ describe('UNO Server', () => {
     await a.next()
 
     send(a.ws, { action: 'ready' }); await a.next(); await b.next()
-    // Bob readies → AI is already ready → game starts
+    // Bob readies >> AI is already ready >> game starts
     send(b.ws, { action: 'ready' })
     const p1 = await a.next() // players from Bob's ready
     await b.next()
@@ -1844,7 +1844,7 @@ describe('UNO Server', () => {
 
     const lobby = lobbiesRef.get('r')
 
-    // Bob disconnected → Alice readies → game should NOT start
+    // Bob disconnected >> Alice readies >> game should NOT start
     lobby.players[1].disconnected = true
     send(a.ws, { action: 'ready' })
     const r1 = await a.next()
@@ -1853,7 +1853,7 @@ describe('UNO Server', () => {
     expect(lobby.game.started).toBe(false)
     expect(lobby.players[0].ready).toBe(true)
 
-    // Bob reconnects and readies → now both ready → game starts
+    // Bob reconnects and readies >> now both ready >> game starts
     lobby.players[1].disconnected = false
     send(b.ws, { action: 'ready' })
     const r2 = await a.next() // players broadcast from Bob's ready
@@ -1918,7 +1918,7 @@ describe('UNO Server', () => {
   })
 
   it('rapid ready clicks toggle twice without client guard', async () => {
-    // Two rapid ready messages → two toggles → net off (ready=false)
+    // Two rapid ready messages >> two toggles >> net off (ready=false)
     const a = await trackedWs(port)
     await a.next()
     send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
@@ -1990,7 +1990,7 @@ describe('UNO Server', () => {
     a.close()
   })
 
-  it('full flow: B closes tab → A readies (stays ready) → B reconnects → B readies → game starts', async () => {
+  it('full flow: B closes tab >> A readies (stays ready) >> B reconnects >> B readies >> game starts', async () => {
     const a = await trackedWs(port)
     await a.next()
     send(a.ws, { action: 'join', name: 'Alice', lobbyId: 'r' })
@@ -2047,14 +2047,14 @@ describe('UNO Server', () => {
     expect(p1.players.find(p => p.name === 'Alice').ready).toBe(true)
     expect(lobby.players[1].disconnected).toBe(false)
 
-    // 7. B clicks ready → game starts
+    // 7. B clicks ready >> game starts
     send(b2.ws, { action: 'ready' })
     const readyResp = await b2.next() // B's own broadcast
     expect(readyResp.action).toBe('players')
     const bobReady = readyResp.players.find(p => p.name === 'Bob')
     expect(bobReady.ready).toBe(true)
 
-    // Both active players ready → game starts
+    // Both active players ready >> game starts
     const startMsg = await b2.next()
     expect(startMsg.action).toBe('start')
     expect(lobby.game.started).toBe(true)

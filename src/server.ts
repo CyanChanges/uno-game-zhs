@@ -72,7 +72,7 @@ interface ClientMessage {
 
 type StaticFile = [string, string];
 
-const allowFiles: StaticFile[] = [['index.html', 'text/html'], ['client.js', 'text/javascript'], ['style.css', 'text/css']];
+const allowFiles: StaticFile[] = [['index.html', 'text/html'], ['about.html', 'text/html'], ['client.js', 'text/javascript'], ['style.css', 'text/css']];
 const files: Record<string, { content: Buffer; type: string }> = {};
 
 function loadStaticFiles(): void {
@@ -98,6 +98,12 @@ const httpServer = new Server((req: IncomingMessage, res: ServerResponse) => {
 
   if (url === '/') {
     const { content, type } = files[allowFiles[0][0]];
+    res.setHeader('Content-Type', type);
+    return res.end(content);
+  }
+
+  if (url === '/about') {
+    const { content, type } = files['about.html'];
     res.setHeader('Content-Type', type);
     return res.end(content);
   }
@@ -901,7 +907,7 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           }
           const oldReady = player.ready;
           player.ready = !player.ready;
-          serverLog(`ready TOGGLE player=${player.name} ${oldReady}→${player.ready} lobbyId=${metadata.lobbyId?.slice(0, 8)} playerId=${metadata.id?.slice(0, 8)}`);
+          serverLog(`ready TOGGLE player=${player.name} ${oldReady}>>${player.ready} lobbyId=${metadata.lobbyId?.slice(0, 8)} playerId=${metadata.id?.slice(0, 8)}`);
           logState('ready', metadata, { player: player.name, ready: player.ready, allPlayers: lobby.players.map(p => ({ name: p.name, ready: p.ready, disconnected: p.disconnected })) });
           sessions.set(player.id, { ...sessions.get(player.id)!, pendingReady: player.ready });
           broadcastPlayers(metadata.lobbyId!);
