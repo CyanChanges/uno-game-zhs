@@ -58,6 +58,8 @@ interface ServerMessage {
   message?: string;
   errorKey?: string;
   spectator?: boolean;
+  gameState?: number;
+  drawingCount?: number;
   playerId?: string;
   type?: string;
   content?: string;
@@ -108,6 +110,8 @@ let isSelectingMultiple = false;
 let myHand: Card[] = [];
 let myLobbyId: string | null = null;
 let isSpectating = false;
+let gameState = 0;
+let drawingChain = 0;
 
 function getLeaveSpectateBtn(): HTMLButtonElement | null {
   return document.getElementById('leave-spectate-btn') as HTMLButtonElement | null;
@@ -289,6 +293,8 @@ function connect(): void {
         players = message.players || [];
         currentTurn = message.turn || 0;
         gameDirection = message.direction || 1;
+        gameState = message.gameState || 0;
+        drawingChain = message.drawingCount || 0;
         myLobbyId = message.lobbyId || null;
         localStorage.setItem('unoPlayerId', myId!);
         localStorage.setItem('unoInLobby', '1');
@@ -312,6 +318,8 @@ function connect(): void {
         players = message.players || [];
         currentTurn = message.turn || 0;
         gameDirection = message.direction || 1;
+        gameState = message.gameState || 0;
+        drawingChain = message.drawingCount || 0;
         myHand = message.hand || [];
         updatePlayers(players, currentTurn);
         updateDiscardPile(message.discardPile || []);
@@ -335,6 +343,8 @@ function connect(): void {
         players = message.players || [];
         currentTurn = message.turn || 0;
         gameDirection = message.direction || 1;
+        gameState = message.gameState || 0;
+        drawingChain = message.drawingCount || 0;
         myHand = message.hand || [];
         updatePlayers(players, currentTurn);
         updateDiscardPile(message.discardPile || []);
@@ -760,8 +770,10 @@ function updateHand(hand: Card[]): void {
 
     // Mark non-playable cards (no hover lift)
     if (topColor && topType) {
+      const isNCard = (t: string) => t === 'draw2' || t === 'wild4';
       const playable = card.type === 'wild' || card.type === 'wild4' ||
-        card.color === topColor || card.type === topType;
+        card.color === topColor || card.type === topType ||
+        (isNCard(card.type) && isNCard(topType));
       if (!playable) cardDiv.classList.add('not-playable');
     }
 
@@ -785,7 +797,7 @@ function updateHand(hand: Card[]): void {
   }
 }
 
-function handleCardClick(card: Card, cardIndex: number, hand: Card[]): void {
+async function handleCardClick(card: Card, cardIndex: number, hand: Card[]): Promise<void> {
   // If wild color picker is open and this card is not wild, dismiss picker
   if (wildColorPicker.style.display !== 'none' && card.type !== 'wild' && card.type !== 'wild4') {
     hideWildColorPicker();
@@ -795,18 +807,15 @@ function handleCardClick(card: Card, cardIndex: number, hand: Card[]): void {
   if (isSelectingMultiple) {
     toggleCardSelection(card, cardIndex, hand);
   } else {
-    // Check if this card can be played with others of the same type
-    const sameTypeCards = hand.filter((c, i) =>
-      c.type === card.type &&
-      c.type !== 'wild' &&
-      c.type !== 'wild4' &&
-      i !== cardIndex
-    );
-
     // Single card play
     if (card.type === 'wild' || card.type === 'wild4') {
       showWildColorPicker(card);
     } else {
+      // In drawing chain state, confirm before breaking with non-draw2/wild4
+      if (gameState === 1 && card.type !== 'draw2' && card.type !== 'wild4') {
+        const ok = await showConfirm(`确定要打破加牌吗？\n目前需要抽 ${drawingChain} 张牌`);
+        if (!ok) return;
+      }
       sendMessage({ action: 'play', card: card });
     }
   }
@@ -1052,7 +1061,11 @@ readyButton.addEventListener('click', () => {
   };
 });
 
-drawCardButton.addEventListener('click', () => {
+drawCardButton.addEventListener('click', async () => {
+  if (gameState === 1 && drawingChain > 0) {
+    const ok = await showConfirm(`确定要接受加牌吗？\n你将抽 ${drawingChain} 张牌`);
+    if (!ok) return;
+  }
   sendMessage({ action: 'draw' });
 });
 

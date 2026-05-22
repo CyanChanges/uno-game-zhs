@@ -842,4 +842,169 @@ describe('UNO Client', () => {
 
     await page.close()
   })
+
+  it('drawing chain confirm dialog shows when breaking chain', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'chain-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // A plays draw2 (use dev to give a draw2, or send directly matching discard)
+    const topInfo = await pageA.evaluate(() => {
+      const card = document.querySelector('#discard-pile .card')
+      return { color: card ? card.getAttribute('data-color') : 'red' }
+    })
+
+    // Make sure it is A's turn
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    if (!(await isMyTurn(pageA))) {
+      await pageB.waitForFunction(() => {
+        const el = document.getElementById('turn-indicator')
+        return el ? el.classList.contains('my-turn') : false
+      }, { timeout: 5000 })
+      await pageB.click('#draw-card')
+      await pageA.waitForTimeout(500)
+    }
+
+    // A plays draw2
+    await pageA.evaluate((color) => {
+      sendMessage({ action: 'play', card: { color: color, type: 'draw2' } })
+    }, topInfo.color)
+    await pageA.waitForTimeout(500)
+
+    // Now B's turn — B clicks a card that is NOT draw2/wild4
+    // Confirm dialog should appear
+    await pageB.evaluate(() => {
+      const cards = document.querySelectorAll('#player-hand .card')
+      for (let i = 0; i < cards.length; i++) {
+        const type = cards[i].getAttribute('data-type')
+        if (type !== 'draw2' && type !== 'wild4') {
+          cards[i].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+          return
+        }
+      }
+    })
+    await pageB.waitForTimeout(300)
+
+    // Confirm dialog should be visible with drawing count
+    const modalVisible = await pageB.evaluate(() => {
+      const overlay = document.getElementById('modal-overlay')
+      return overlay && !overlay.classList.contains('hidden')
+    })
+    expect(modalVisible).toBe(true)
+    const modalMsg = await pageB.$eval('#modal-message', el => el.textContent)
+    expect(modalMsg).toContain('打破加牌')
+    expect(modalMsg).toContain('张牌')
+
+    // Click cancel on the modal to dismiss it
+    await pageB.click('#modal-cancel-btn')
+    await pageB.waitForTimeout(300)
+
+    // Now click draw — confirm dialog should appear with penalty info
+    await pageB.click('#draw-card')
+    await pageB.waitForTimeout(300)
+    const drawModalVisible = await pageB.evaluate(() => {
+      const overlay = document.getElementById('modal-overlay')
+      return overlay && !overlay.classList.contains('hidden')
+    })
+    expect(drawModalVisible).toBe(true)
+    const drawModalMsg = await pageB.$eval('#modal-message', el => el.textContent)
+    expect(drawModalMsg).toContain('接受加牌')
+    expect(drawModalMsg).toContain('张牌')
+
+    await pageA.close()
+    await pageB.close()
+  })
+
+  it('draw in drawing state accepts penalty and adds cards', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'penalty-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const getCardCount = async (page) => (await page.$$('#player-hand .card')).length
+
+    // Make sure it is A's turn
+    if (!(await isMyTurn(pageA))) {
+      await pageB.waitForFunction(() => {
+        const el = document.getElementById('turn-indicator')
+        return el ? el.classList.contains('my-turn') : false
+      }, { timeout: 5000 })
+      await pageB.click('#draw-card')
+      await pageA.waitForTimeout(500)
+    }
+
+    // A plays draw2 using matching color
+    const topColor = await pageA.evaluate(() => {
+      const card = document.querySelector('#discard-pile .card')
+      return card ? card.getAttribute('data-color') : 'red'
+    })
+    await pageA.evaluate((color) => {
+      sendMessage({ action: 'play', card: { color: color, type: 'draw2' } })
+    }, topColor)
+    await pageA.waitForTimeout(500)
+
+    // B now in drawing state — click draw and accept penalty
+    const bBefore = await getCardCount(pageB)
+
+    await pageB.click('#draw-card')
+    await pageB.waitForSelector('#modal-ok-btn', { timeout: 3000 })
+    await pageB.click('#modal-ok-btn') // accept penalty
+    await pageB.waitForTimeout(500)
+
+    // B should have 2 more cards
+    const bAfter = await getCardCount(pageB)
+    expect(bAfter).toBe(bBefore + 2)
+
+    // State should be reset — B should be able to play normally now
+    // (turn advanced after penalty, so it is A's turn)
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    }, { timeout: 5000 })
+
+    await pageA.close()
+    await pageB.close()
+  })
 })
