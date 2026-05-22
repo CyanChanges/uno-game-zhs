@@ -1381,7 +1381,12 @@ body.player-action-disabled #player-hand .card {
     background: rgba(0, 0, 0, 0.7);
     align-items: center;
     justify-content: center;
-    z-index: 900;
+    z-index: 99999;
+}
+
+@keyframes modalOut {
+    from { opacity: 1; transform: scale(1); }
+    to { opacity: 0; transform: scale(0.95); }
 }
 
 #modal-box {

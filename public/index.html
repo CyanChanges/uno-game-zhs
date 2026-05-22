@@ -105,7 +105,7 @@
         </div>
     </div>
     <div id="about-overlay" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;z-index:2000;">
-        <div style="background:#1e1e1e;border:1px solid #374151;border-radius:20px;padding:32px 40px;max-width:460px;width:90%;color:#e0e0e0;line-height:1.8;animation:modalIn 0.2s ease;">
+        <div id="about-box" style="background:#1e1e1e;border:1px solid #374151;border-radius:20px;padding:32px 40px;max-width:460px;width:90%;color:#e0e0e0;line-height:1.8;animation:modalIn 0.2s ease;">
             <h2 style="color:#fff;text-align:center;margin-bottom:16px;">关于</h2>
             <h3 style="color:#667eea;margin:16px 0 6px;font-size:1rem;">技术栈</h3>
             <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">TypeScript - Apache-2.0</p>
@@ -123,8 +123,45 @@
             <button id="about-close-btn" style="width:100%;padding:10px;margin-top:16px;border:1px solid #374151;border-radius:10px;background:transparent;color:#a0aec0;font-size:0.85rem;cursor:pointer;font-family:inherit;">关闭</button>
         </div>
     </div>
+    <div id="rules-overlay" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.85);align-items:flex-start;justify-content:center;z-index:2000;overflow-y:auto;padding:40px 20px;">
+        <div id="rules-box" style="background:#1e1e1e;border:1px solid #374151;border-radius:20px;padding:32px 40px;max-width:600px;width:90%;color:#e0e0e0;line-height:1.8;animation:modalIn 0.2s ease;">
+            <h2 style="color:#fff;text-align:center;margin-bottom:16px;">UNO 规则</h2>
+
+            <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">目标</h3>
+            <p style="font-size:0.85rem;color:#a0aec0;">最先出完手牌的玩家获胜。</p>
+
+            <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">牌面</h3>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;font-size:0.8rem;color:#a0aec0;margin-bottom:8px;">
+              <span style="background:#e74c3c;color:#fff;padding:2px 8px;border-radius:4px;">红</span>
+              <span style="background:#3498db;color:#fff;padding:2px 8px;border-radius:4px;">蓝</span>
+              <span style="background:#27ae60;color:#fff;padding:2px 8px;border-radius:4px;">绿</span>
+              <span style="background:#f39c12;color:#fff;padding:2px 8px;border-radius:4px;">黄</span>
+              <span>—</span>
+              <span style="background:#2c3e50;color:#fff;padding:2px 8px;border-radius:4px;">黑★</span>
+            </div>
+            <table style="width:100%;font-size:0.8rem;color:#a0aec0;border-collapse:collapse;">
+              <tr><td style="padding:4px 8px;border-bottom:1px solid #374151;">数字牌</td><td style="padding:4px 8px;border-bottom:1px solid #374151;">0~9，每个颜色各一张 0、两张 1~9</td></tr>
+              <tr><td style="padding:4px 8px;border-bottom:1px solid #374151;">跳过 Ø</td><td style="padding:4px 8px;border-bottom:1px solid #374151;">跳过下一位玩家</td></tr>
+              <tr><td style="padding:4px 8px;border-bottom:1px solid #374151;">反转 ⇄</td><td style="padding:4px 8px;border-bottom:1px solid #374151;">反转出牌方向</td></tr>
+              <tr><td style="padding:4px 8px;border-bottom:1px solid #374151;">+2</td><td style="padding:4px 8px;border-bottom:1px solid #374151;">下家抽 2 张（可接 +2/+4 叠加）</td></tr>
+              <tr><td style="padding:4px 8px;border-bottom:1px solid #374151;">变色 W</td><td style="padding:4px 8px;border-bottom:1px solid #374151;">任意颜色均可出，出牌人选择下一轮颜色</td></tr>
+              <tr><td style="padding:4px 8px;border-bottom:1px solid #374151;">+4</td><td style="padding:4px 8px;border-bottom:1px solid #374151;">下家抽 4 张并选择颜色（可接 +2/+4 叠加）</td></tr>
+            </table>
+
+            <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">出牌规则</h3>
+            <p style="font-size:0.85rem;color:#a0aec0;">出的牌必须与弃牌堆顶牌<b>颜色相同</b>或<b>类型相同</b>，或是 <b>黑牌（变色/+4）</b>。+2 和 +4 互认为同族（可互接）。</p>
+
+            <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">加牌链</h3>
+            <p style="font-size:0.85rem;color:#a0aec0;">打出 +2 或 +4 后进入加牌状态，下家可继续打 +2/+4 叠加罚牌。若无法/不愿接，则需抽牌（点抽牌按钮）或打非 +n 牌打破链条——打破者抽所有累加的罚牌。</p>
+
+            <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">认输 · 观战</h3>
+            <p style="font-size:0.85rem;color:#a0aec0;">2 人局认输 = 对手胜。≥3 人局认输可选择进入观战模式继续观战，或离开房间。</p>
+
+            <button id="rules-close-btn" style="width:100%;padding:10px;margin-top:24px;border:1px solid #374151;border-radius:10px;background:transparent;color:#a0aec0;font-size:0.85rem;cursor:pointer;font-family:inherit;">关闭</button>
+        </div>
+    </div>
     <footer class="user-select">Copyright (C) 2026 miruku (lovemilk), <a target="_blank"
-            href="https://aka.lovemilk.top/github/uno-game-zhs/blob/main/LICENSE">BSD 3-Clause License</a> · <a href="#" id="about-link">关于</a></footer>
+            href="https://aka.lovemilk.top/github/uno-game-zhs/blob/main/LICENSE">BSD 3-Clause License</a> · <a href="#" id="rules-link">规则</a> · <a href="#" id="about-link">关于</a></footer>
     <script src="client.js"></script>
 </body>
 

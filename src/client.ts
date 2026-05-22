@@ -150,10 +150,15 @@ function showAlert(msg: string): Promise<void> {
     modalOverlay.style.display = 'flex';
 
     function cleanup() {
-      modalOverlay.classList.add('hidden');
-      modalOverlay.style.display = '';
-      modalOkBtn.removeEventListener('click', onOk);
-      resolve();
+      const box = document.getElementById('modal-box')!;
+      box.style.animation = 'modalOut 0.1s ease forwards';
+      box.addEventListener('animationend', function h() {
+        box.removeEventListener('animationend', h);
+        modalOverlay.classList.add('hidden');
+        modalOverlay.style.display = '';
+        modalOkBtn.removeEventListener('click', onOk);
+        resolve();
+      });
     }
     function onOk() { cleanup(); }
     modalOkBtn.addEventListener('click', onOk);
@@ -169,11 +174,16 @@ function showConfirm(msg: string): Promise<boolean> {
     modalOverlay.style.display = 'flex';
 
     function cleanup(result: boolean) {
-      modalOverlay.classList.add('hidden');
-      modalOverlay.style.display = '';
-      modalOkBtn.removeEventListener('click', onOk);
-      modalCancelBtn.removeEventListener('click', onCancel);
-      resolve(result);
+      const box = document.getElementById('modal-box')!;
+      box.style.animation = 'modalOut 0.1s ease forwards';
+      box.addEventListener('animationend', function h() {
+        box.removeEventListener('animationend', h);
+        modalOverlay.classList.add('hidden');
+        modalOverlay.style.display = '';
+        modalOkBtn.removeEventListener('click', onOk);
+        modalCancelBtn.removeEventListener('click', onCancel);
+        resolve(result);
+      });
     }
     function onOk() { cleanup(true); }
     function onCancel() { cleanup(false); }
@@ -1135,22 +1145,50 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // About modal
   const aboutOverlay = document.getElementById('about-overlay')!;
+  const aboutBox = document.getElementById('about-box')!;
   document.getElementById('about-link')!.addEventListener('click', (e) => {
     e.preventDefault();
     aboutOverlay.classList.remove('hidden');
     aboutOverlay.style.display = 'flex';
+    aboutBox.style.animation = 'modalIn 0.2s ease';
   });
-  document.getElementById('about-close-btn')!.addEventListener('click', () => {
-    aboutOverlay.classList.add('hidden');
-    aboutOverlay.style.display = '';
-  });
-  document.getElementById('about-clear-btn')!.addEventListener('click', () => {
-    if (!confirm('确定要清除所有本地存储状态吗？此操作不可撤销。')) return;
-    localStorage.clear();
+  function closeAbout() {
+    aboutBox.style.animation = 'modalOut 0.15s ease forwards';
+    aboutBox.addEventListener('animationend', function h() {
+      aboutBox.removeEventListener('animationend', h);
+      aboutOverlay.classList.add('hidden');
+      aboutOverlay.style.display = '';
+    });
+  }
+  document.getElementById('about-close-btn')!.addEventListener('click', closeAbout);
+  document.getElementById('about-clear-btn')!.addEventListener('click', async () => {
+    const ok = await showConfirm('确定要清除所有本地存储状态吗？此操作不可撤销。');
+    if (!ok) return;
     const msg = document.getElementById('about-clear-msg')!;
-    msg.style.display = 'block';
-    setTimeout(() => { msg.style.display = 'none'; }, 2000);
+    const delay = msg.style.display === 'none' ? 0 : 500
+    msg.style.display = 'none';
+    localStorage.clear();
+    setTimeout(() => { msg.style.display = 'block'; }, delay);
   });
+
+  // Rules modal
+  const rulesOverlay = document.getElementById('rules-overlay')!;
+  const rulesBox = document.getElementById('rules-box')!;
+  document.getElementById('rules-link')!.addEventListener('click', (e) => {
+    e.preventDefault();
+    rulesOverlay.classList.remove('hidden');
+    rulesOverlay.style.display = 'flex';
+    rulesBox.style.animation = 'modalIn 0.2s ease';
+  });
+  function closeRules() {
+    rulesBox.style.animation = 'modalOut 0.15s ease forwards';
+    rulesBox.addEventListener('animationend', function h() {
+      rulesBox.removeEventListener('animationend', h);
+      rulesOverlay.classList.add('hidden');
+      rulesOverlay.style.display = '';
+    });
+  }
+  document.getElementById('rules-close-btn')!.addEventListener('click', closeRules);
 });
 
 function copyLobbyId(): void {
