@@ -1007,4 +1007,57 @@ describe('UNO Client', () => {
     await pageA.close()
     await pageB.close()
   })
+
+  it('spectator can exit without error', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'specexit-' + Date.now()
+    // A creates room, adds AI, starts game
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageA.click('#invite-ai')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // B joins as spectator
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageB.waitForSelector('#modal-ok-btn', { timeout: 5000 })
+    await pageB.click('#modal-ok-btn') // accept spectate
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // Verify B can see the leave button
+    const btnVisible = await pageB.evaluate(() => {
+      const btn = document.getElementById('leave-spectate-btn')
+      return btn && btn.style.display !== 'none'
+    })
+    expect(btnVisible).toBe(true)
+
+    // Click leave-spectate
+    await pageB.click('#leave-spectate-btn')
+    await pageB.waitForSelector('#modal-ok-btn', { timeout: 3000 })
+    await pageB.click('#modal-ok-btn') // confirm
+
+    // B should return to join form without error overlay
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('join')
+      return el && !el.disabled
+    }, { timeout: 10000 })
+
+    await pageA.close()
+    await pageB.close()
+  })
 })

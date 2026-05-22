@@ -1071,6 +1071,12 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           return;
 
         case 'leave':
+          if (metadata.isSpectator) {
+            metadata.lobbyId = null;
+            metadata.isSpectator = false;
+            ws.send(JSON.stringify({ action: 'surrendered' }));
+            return;
+          }
           if (!lobbies.has(metadata.lobbyId || '')) {
             ws.send(JSON.stringify(errorResponse('LOBBY_NOT_FOUND'))); return;
           }

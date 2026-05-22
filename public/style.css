@@ -453,7 +453,14 @@ h1 {
     box-shadow: 0 12px 25px rgba(102, 126, 234, 0.4);
 }
 
+#surrender-btn {
+    box-shadow: 0 8px 20px rgba(102, 126, 234, 0.3);
+}
 
+#surrender-btn:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 12px 25px rgba(102, 126, 234, 0.4);
+}
 
 /* Wild Color Picker */
 #wild-color-picker {
@@ -614,11 +621,34 @@ h1 {
 
 /* Spectator mode */
 body.spectator #player-hand-area,
-body.spectator #action-buttons,
 body.spectator #wild-color-picker,
+body.spectator #draw-card,
 body.spectator #surrender-btn,
 body.spectator #reaction-bar {
     display: none !important;
+}
+
+body.spectator #leave-spectate-btn {
+    display: block !important;
+}
+
+body.spectator #discard-pile {
+    opacity: 1 !important;
+}
+
+#leave-spectate-btn {
+    background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+    color: white;
+    box-shadow: 0 6px 15px rgba(255, 107, 107, 0.3);
+}
+
+#leave-spectate-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(255, 107, 107, 0.4);
+}
+
+#leave-spectate-btn:active {
+    transform: translateY(0);
 }
 
 body.spectator #turn-indicator {
@@ -944,10 +974,15 @@ body.spectator #turn-indicator::after {
 }
 
 body.player-action-disabled #center-area {
+    cursor: not-allowed;
+}
+
+body.player-action-disabled #discard-pile,
+body.player-action-disabled #wild-color-picker {
+    opacity: 0.6;
     pointer-events: none;
     user-select: none;
     -webkit-user-select: none;
-    cursor: not-allowed;
 }
 
 body.player-action-disabled #surrender-btn {
@@ -961,26 +996,27 @@ body.player-action-disabled #leave-spectate-btn {
 }
 
 body.player-action-disabled #draw-card {
-    pointer-events: none;
+    opacity: 0.6;
     cursor: not-allowed;
 }
 
-body.player-action-disabled #player-hand-area {
+body.player-action-disabled #draw-card:hover {
+    transform: none;
+}
+
+body.player-action-disabled #player-hand {
     user-select: none;
     -webkit-user-select: none;
     opacity: 0.6;
     cursor: not-allowed;
 }
 
-body.player-action-disabled #player-hand .card {
+body.player-action-disabled #player-hand>* {
     pointer-events: none;
-    opacity: 0.6;
-    cursor: not-allowed;
 }
 
 #card-controls {
     pointer-events: auto;
-    opacity: 1;
 }
 
 #opponent-hands .player {
@@ -1115,6 +1151,7 @@ body.player-action-disabled #player-hand .card {
     top: 6px;
     left: 6px;
     z-index: 10;
+    opacity: 1;
 }
 
 #card-layout-toggle {
@@ -1242,6 +1279,11 @@ body.player-action-disabled #player-hand .card {
 #discard-pile .card {
     position: relative;
     z-index: 1;
+    cursor: default;
+}
+
+#discard-pile .card:hover {
+    transform: none;
 }
 
 /* Leave Lobby Button */

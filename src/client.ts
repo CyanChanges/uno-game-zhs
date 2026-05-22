@@ -150,15 +150,10 @@ function showAlert(msg: string): Promise<void> {
     modalOverlay.style.display = 'flex';
 
     function cleanup() {
-      const box = document.getElementById('modal-box')!;
-      box.style.animation = 'modalOut 0.1s ease forwards';
-      box.addEventListener('animationend', function h() {
-        box.removeEventListener('animationend', h);
-        modalOverlay.classList.add('hidden');
-        modalOverlay.style.display = '';
-        modalOkBtn.removeEventListener('click', onOk);
-        resolve();
-      });
+      modalOverlay.classList.add('hidden');
+      modalOverlay.style.display = '';
+      modalOkBtn.removeEventListener('click', onOk);
+      resolve();
     }
     function onOk() { cleanup(); }
     modalOkBtn.addEventListener('click', onOk);
@@ -174,16 +169,11 @@ function showConfirm(msg: string): Promise<boolean> {
     modalOverlay.style.display = 'flex';
 
     function cleanup(result: boolean) {
-      const box = document.getElementById('modal-box')!;
-      box.style.animation = 'modalOut 0.1s ease forwards';
-      box.addEventListener('animationend', function h() {
-        box.removeEventListener('animationend', h);
-        modalOverlay.classList.add('hidden');
-        modalOverlay.style.display = '';
-        modalOkBtn.removeEventListener('click', onOk);
-        modalCancelBtn.removeEventListener('click', onCancel);
-        resolve(result);
-      });
+      modalOverlay.classList.add('hidden');
+      modalOverlay.style.display = '';
+      modalOkBtn.removeEventListener('click', onOk);
+      modalCancelBtn.removeEventListener('click', onCancel);
+      resolve(result);
     }
     function onOk() { cleanup(true); }
     function onCancel() { cleanup(false); }
@@ -1135,12 +1125,10 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.setItem('unoLobbyId', lobbyIdInput.value.toUpperCase());
   });
 
-  getLeaveSpectateBtn()?.addEventListener('click', () => {
+  getLeaveSpectateBtn()?.addEventListener('click', async () => {
+    const ok = await showConfirm('确定要退出观战吗？');
+    if (!ok) return;
     sendMessage({ action: 'leave' });
-    localStorage.removeItem('unoPlayerId');
-    localStorage.removeItem('unoInLobby');
-    localStorage.removeItem('unoInGame');
-    resetGameState();
   });
 
   // About modal
