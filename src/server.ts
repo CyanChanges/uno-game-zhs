@@ -6,6 +6,9 @@ import { decideMove } from './aiplayer';
 import { ERR, errorResponse, ErrorCode } from './errors';
 import { RECONNECT_DEFER_MS, RECONNECT_DEADLINE_MS, DISCONNECT_REMOVE_MS, MAX_HAND_CARDS } from './constants';
 
+const PKG = JSON.parse(readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
+const VERSION = PKG.version || '1.0.0';
+
 interface Card {
   color?: string;
   type: string;
@@ -1410,6 +1413,21 @@ function isDev(): boolean {
   return process.env.NODE_ENV === 'development';
 }
 
+function getPort(): number {
+  const idx = process.argv.indexOf('--port');
+  if (idx !== -1 && process.argv[idx + 1]) {
+    const port = parseInt(process.argv[idx + 1], 10);
+    if (port > 0 && port < 65536) return port;
+  }
+  return 3000;
+}
+
+const PORT = getPort();
+
+console.log(`UNO Server v${VERSION}`);
+console.log(`Copyright (C) 2026 miruku (lovemilk)`);
+console.log();
+
 process.on('SIGINT', () => {
   process.stdout.write('\nServer closed');
   if (!!process.stdin && !hasFlagExitImmediately() && !isDev()) {
@@ -1429,6 +1447,6 @@ process.on('SIGINT', () => {
   }
 });
 
-httpServer.on('listening', () => console.log('Server started on port 3000'));
+httpServer.on('listening', () => serverLog(`Server started on port ${PORT}`));
 httpServer.on('error', (e: Error) => { console.error(e); process.emit('SIGINT'); });
-httpServer.listen(3000);
+httpServer.listen(PORT);

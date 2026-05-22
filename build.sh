@@ -42,21 +42,25 @@ fi
 echo "Building TypeScript..."
 npm run build
 
-if [ -d "$BIN_DIR" ]; then
-    rm -rf "$BIN_DIR"
-fi
 mkdir -p "$BIN_DIR"
 
 echo "build for $PLATFORM $ARCH..."
 
 if [ "$PLATFORM" = "win" ]; then
-    outfile="${BIN_DIR}uno-server.exe"
+    outfile="${BIN_DIR}windows/uno-server.exe"
+    outdir=$(dirname "$outfile")
+    rm -rf "$outdir"
+    mkdir -p "$outdir"
 
     $PKG . --targets "node12-win-${ARCH}" --output "$outfile" --public
 
     scripts/write_copyright "$outfile"
 else
-    outfile="${BIN_DIR}uno-server"
+    outfile="${BIN_DIR}linux/uno-server"
+    outdir=$(dirname "$outfile")
+    rm -rf "$outdir"
+    mkdir -p "$outdir"
+
     # Fallback to npx pkg for non-Windows platforms if they are still Node.js based
     $PKG . --targets "node12-${PLATFORM}-${ARCH}" --output "$outfile" --public
 fi
