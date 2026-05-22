@@ -3,7 +3,7 @@
 set -eu
 
 BIN_DIR="bin/"
-CURRENT_DATE=$(date +%F)
+VERSION=$(jq -r '.version' package.json)
 TARGET_DIR="release/"
 
 PLATFORM_FLAG=${1:-win}
@@ -29,7 +29,7 @@ case "$ARCH_FLAG" in
 esac
 
 
-FILE_NAME="UNO-${CURRENT_DATE}_${PLATFORM}_${ARCH}.zip"
+FILE_NAME="UNO-v${VERSION}_${PLATFORM}_${ARCH}.zip"
 FULL_PATH="${TARGET_DIR}${FILE_NAME}"
 
 PKG="npx pkg"

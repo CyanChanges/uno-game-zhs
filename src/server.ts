@@ -414,7 +414,7 @@ function checkGameAborted(lobbyId: string, excludePlayerId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby || !lobby.game.started) return;
   const realPlayers = lobby.players.filter(p => !p.isAI);
-  if (realPlayers.length <= 1) {
+  if (realPlayers.length === 0) {
     broadcastGameAborted(lobbyId, excludePlayerId);
   }
 }
@@ -1339,7 +1339,7 @@ function processClose(_ws: WebSocket, metadata: ClientMetadata): void {
     const idx = lobby.players.findIndex(p => p.id === player.id);
     if (idx > -1 && lobby.players[idx].disconnected) {
       const removed = lobby.players.splice(idx, 1)[0];
-      if (removed.isCreator) {
+      if (removed.isCreator && !lobby.game.started) {
         const removedAIs = lobby.players.filter(p => p.isAI);
         lobby.players = lobby.players.filter(p => !p.isAI);
         for (const ai of removedAIs) clearAITimeout(ai.id);
@@ -1378,13 +1378,15 @@ function handleLeave(lobbyId: string, playerId: string): void {
       lobby.game.turn = (lobby.game.turn - 1 + lobby.players.length) % lobby.players.length;
     }
 
-    if (player.isCreator) {
+    if (player.isCreator && !lobby.game.started) {
       const removedAIs = lobby.players.filter(p => p.isAI);
       lobby.players = lobby.players.filter(p => !p.isAI);
       for (const ai of removedAIs) clearAITimeout(ai.id);
       if (lobby.players.length > 0) {
         lobby.players[0].isCreator = true;
       }
+    } else if (player.isCreator) {
+      if (lobby.players.length > 0) lobby.players[0].isCreator = true;
     }
 
     checkGameAborted(lobbyId, playerId);

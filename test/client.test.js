@@ -1126,4 +1126,70 @@ describe('UNO Client', () => {
     await pageA.close()
     await pageB.close()
   })
+
+  it('surrender with 2 humans + AI does not end game', { timeout: 45000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'surrpl-' + Date.now()
+    // A creates room
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    // Add AI
+    await pageA.click('#invite-ai')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    // B joins
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 3)
+
+    // All ready — game starts
+    await pageA.click('#ready') // Alice ready
+    await pageB.click('#ready') // Bob ready, AI already ready
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // A surrenders
+    await pageA.click('#surrender-btn')
+    await pageA.waitForSelector('#modal-ok-btn', { timeout: 3000 })
+    await pageA.click('#modal-ok-btn') // confirm surrender
+    // Spectate offer appears — click Cancel to leave
+    await pageA.waitForSelector('#modal-cancel-btn', { timeout: 3000 })
+    await pageA.click('#modal-cancel-btn')
+
+    // A should return to lobby
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('lobby')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // B should still be in game (game continues with Bob vs AI)
+    await pageB.waitForTimeout(1500)
+    const bInGame = await pageB.evaluate(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    })
+    expect(bInGame).toBe(true)
+
+    // Turn order should show 2 players (Bob + AI)
+    const playerCount = await pageB.evaluate(() => {
+      const pills = document.querySelectorAll('.turn-order-pill')
+      return pills.length
+    })
+    expect(playerCount).toBe(2)
+
+    await pageA.close()
+    await pageB.close()
+  })
 })
