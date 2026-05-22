@@ -2,7 +2,7 @@
   "name": "uno",
   "version": "1.0.0",
   "scripts": {
-    "build": "tsc -p tsconfig.server.json && tsc -p tsconfig.client.json && cp public/index.html dist/ && cp public/about.html dist/ && cp public/style.css dist/ && cp -r public/icons dist/",
+    "build": "tsc -p tsconfig.server.json && tsc -p tsconfig.client.json && cp public/index.html dist/ && cp public/style.css dist/ && cp -r public/icons dist/",
     "start": "node dist/server.js",
     "start:dev": "NODE_ENV=development nodemon dist/server.js",
     "dev": "NODE_ENV=development nodemon --watch src --watch public --ext ts,html,css --exec 'npm run build && node dist/server.js'",
@@ -37,7 +37,6 @@
     ],
     "assets": [
       "dist/index.html",
-      "dist/about.html",
       "dist/client.js",
       "dist/style.css",
       "dist/aiplayer.js",

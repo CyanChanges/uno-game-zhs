@@ -79,7 +79,7 @@ interface ClientMessage {
 
 type StaticFile = [string, string];
 
-const allowFiles: StaticFile[] = [['index.html', 'text/html'], ['about.html', 'text/html'], ['client.js', 'text/javascript'], ['style.css', 'text/css']];
+const allowFiles: StaticFile[] = [['index.html', 'text/html'], ['client.js', 'text/javascript'], ['style.css', 'text/css']];
 const files: Record<string, { content: Buffer; type: string }> = {};
 
 function loadStaticFiles(): void {
@@ -105,12 +105,6 @@ const httpServer = new Server((req: IncomingMessage, res: ServerResponse) => {
 
   if (url === '/') {
     const { content, type } = files[allowFiles[0][0]];
-    res.setHeader('Content-Type', type);
-    return res.end(content);
-  }
-
-  if (url === '/about') {
-    const { content, type } = files['about.html'];
     res.setHeader('Content-Type', type);
     return res.end(content);
   }

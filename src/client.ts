@@ -1132,6 +1132,25 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.removeItem('unoInGame');
     resetGameState();
   });
+
+  // About modal
+  const aboutOverlay = document.getElementById('about-overlay')!;
+  document.getElementById('about-link')!.addEventListener('click', (e) => {
+    e.preventDefault();
+    aboutOverlay.classList.remove('hidden');
+    aboutOverlay.style.display = 'flex';
+  });
+  document.getElementById('about-close-btn')!.addEventListener('click', () => {
+    aboutOverlay.classList.add('hidden');
+    aboutOverlay.style.display = '';
+  });
+  document.getElementById('about-clear-btn')!.addEventListener('click', () => {
+    if (!confirm('确定要清除所有本地存储状态吗？此操作不可撤销。')) return;
+    localStorage.clear();
+    const msg = document.getElementById('about-clear-msg')!;
+    msg.style.display = 'block';
+    setTimeout(() => { msg.style.display = 'none'; }, 2000);
+  });
 });
 
 function copyLobbyId(): void {

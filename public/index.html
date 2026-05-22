@@ -104,8 +104,27 @@
             <button class="dev-btn call-win-btn" data-action="dev_call_win">🏆 胜利</button>
         </div>
     </div>
+    <div id="about-overlay" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;z-index:2000;">
+        <div style="background:#1e1e1e;border:1px solid #374151;border-radius:20px;padding:32px 40px;max-width:460px;width:90%;color:#e0e0e0;line-height:1.8;animation:modalIn 0.2s ease;">
+            <h2 style="color:#fff;text-align:center;margin-bottom:16px;">关于</h2>
+            <h3 style="color:#667eea;margin:16px 0 6px;font-size:1rem;">技术栈</h3>
+            <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">TypeScript - Apache-2.0</p>
+            <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">ws (WebSocket) - MIT</p>
+            <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">pkg - MIT</p>
+            <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">Blobmoji SVG - MIT</p>
+            <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">Vitest - MIT</p>
+            <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">Playwright - Apache-2.0</p>
+            <h3 style="color:#667eea;margin:16px 0 6px;font-size:1rem;">许可证</h3>
+            <p style="margin:2px 0;font-size:0.85rem;"><a style="color:#667eea;" href="https://opensource.org/license/bsd-3-clause" target="_blank">BSD 3-Clause License</a></p>
+            <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">Copyright &copy; 2026 miruku (lovemilk)</p>
+            <h3 style="color:#667eea;margin:16px 0 6px;font-size:1rem;">存储</h3>
+            <button id="about-clear-btn" style="width:100%;padding:10px;border:none;border-radius:10px;background:linear-gradient(135deg,#ff6b6b,#ee5a24);color:#fff;font-size:0.85rem;font-weight:600;cursor:pointer;font-family:inherit;margin-bottom:8px;">清除本地存储状态</button>
+            <p id="about-clear-msg" style="color:#48bb78;text-align:center;font-size:0.8rem;display:none;margin:0;">已清除</p>
+            <button id="about-close-btn" style="width:100%;padding:10px;margin-top:16px;border:1px solid #374151;border-radius:10px;background:transparent;color:#a0aec0;font-size:0.85rem;cursor:pointer;font-family:inherit;">关闭</button>
+        </div>
+    </div>
     <footer class="user-select">Copyright (C) 2026 miruku (lovemilk), <a target="_blank"
-            href="https://aka.lovemilk.top/github/uno-game-zhs/blob/main/LICENSE">BSD 3-Clause License</a> · <a href="/about">关于</a></footer>
+            href="https://aka.lovemilk.top/github/uno-game-zhs/blob/main/LICENSE">BSD 3-Clause License</a> · <a href="#" id="about-link">关于</a></footer>
     <script src="client.js"></script>
 </body>
 
