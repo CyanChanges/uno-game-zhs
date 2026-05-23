@@ -38,7 +38,8 @@ interface Lobby {
     direction: number;
     started: boolean;
     state: LobbyGameState,
-    drawingCount: number
+    drawingCount: number,
+    drawMode: 'chain' | 'direct'
   };
 }
 
@@ -74,6 +75,7 @@ interface ClientMessage {
   indices?: number[];
   count?: number;
   type?: string;
+  mode?: string;
   content?: string;
 }
 
@@ -234,7 +236,7 @@ function createLobby(lobbyId: string): Lobby {
       direction: 1,
       started: false,
       state: LobbyGameState.normal,
-      drawingCount: 0
+      drawingCount: 0, drawMode: 'chain'
     }
   };
 }
@@ -263,7 +265,8 @@ function broadcastPlayers(lobbyId: string): void {
     action: 'players',
     players: lobby.players,
     turn: lobby.game.turn,
-    lobbyId: lobbyId
+    lobbyId: lobbyId,
+    drawMode: lobby.game.drawMode
   };
   broadcastToLobby(lobbyId, message);
 }
@@ -412,7 +415,7 @@ function broadcastWin(lobbyId: string, winnerName: string): void {
     if (meta.lobbyId === lobbyId) meta.lobbyId = null;
   }
   lobby.players.length = 0;
-  lobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false, state: LobbyGameState.normal, drawingCount: 0 };
+  lobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false, state: LobbyGameState.normal, drawingCount: 0, drawMode: 'chain' };
   startedLobbies.delete(lobbyId);
 }
 
@@ -426,7 +429,7 @@ function broadcastGameAborted(lobbyId: string, excludePlayerId: string): void {
     if (meta.lobbyId === lobbyId && meta.id !== excludePlayerId) meta.lobbyId = null;
   }
   lobby.players = [];
-  lobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false, state: LobbyGameState.normal, drawingCount: 0 };
+  lobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false, state: LobbyGameState.normal, drawingCount: 0, drawMode: 'chain' };
   startedLobbies.delete(lobbyId);
 }
 
@@ -546,16 +549,24 @@ function handlePlayMultiple(lobbyId: string, playerId: string, cards: Card[]): v
     lobby.game.drawingCount = 0;
   } else if (lastCard.type === 'draw2' || lastCard.type === 'wild4') {
     const n = (lastCard.type === 'draw2' ? 2 : 4) * cardCount;
-    if (lobby.game.state === LobbyGameState.normal) {
+    if (lobby.game.drawMode === 'direct') {
+      const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+      const nextPlayer = lobby.players[nextPlayerIndex];
+      nextPlayer.hand!.push(...drawCardsFromDeck(lobby, lobbyId, n));
+      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+      lobby.game.state = LobbyGameState.normal;
+      lobby.game.drawingCount = 0;
+    } else if (lobby.game.state === LobbyGameState.normal) {
       lobby.game.state = LobbyGameState.drawing;
       lobby.game.drawingCount = n;
+      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
     } else {
       lobby.game.drawingCount += n;
+      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
     }
-    lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
   } else {
-    // Non-draw card: break chain
-    if (lobby.game.state === LobbyGameState.drawing) {
+    // Non-draw card: break chain (chain mode only)
+    if (lobby.game.drawMode !== 'direct' && lobby.game.state === LobbyGameState.drawing) {
       const penalty = lobby.game.drawingCount;
       lobby.game.state = LobbyGameState.normal;
       lobby.game.drawingCount = 0;
@@ -609,16 +620,24 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
       lobby.game.drawingCount = 0;
     } else if (card.type === 'draw2' || card.type === 'wild4') {
       const n = card.type === 'draw2' ? 2 : 4;
-      if (lobby.game.state === LobbyGameState.normal) {
+      if (lobby.game.drawMode === 'direct') {
+        const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+        const nextPlayer = lobby.players[nextPlayerIndex];
+        nextPlayer.hand!.push(...drawCardsFromDeck(lobby, lobbyId, n));
+        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+        lobby.game.state = LobbyGameState.normal;
+        lobby.game.drawingCount = 0;
+      } else if (lobby.game.state === LobbyGameState.normal) {
         lobby.game.state = LobbyGameState.drawing;
         lobby.game.drawingCount = n;
+        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
       } else {
         lobby.game.drawingCount += n;
+        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
       }
-      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
     } else {
-      // Non-draw card: break chain
-      if (lobby.game.state === LobbyGameState.drawing) {
+      // Non-draw card: break chain (chain mode only)
+      if (lobby.game.drawMode !== 'direct' && lobby.game.state === LobbyGameState.drawing) {
         const penalty = lobby.game.drawingCount;
         lobby.game.state = LobbyGameState.normal;
         lobby.game.drawingCount = 0;
@@ -971,6 +990,23 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           return;
         }
 
+        case 'set_draw_mode': {
+          const lobby = lobbies.get(metadata.lobbyId!);
+          if (!lobby) { ws.send(JSON.stringify(errorResponse('NOT_IN_LOBBY'))); return; }
+          const creator = lobby.players.find(p => p.id === metadata.id);
+          if (!creator || !creator.isCreator) {
+            ws.send(JSON.stringify(errorResponse('CREATOR_ONLY')));
+            return;
+          }
+          if (lobby.game.started) {
+            ws.send(JSON.stringify(errorResponse('GAME_ALREADY_STARTED')));
+            return;
+          }
+          lobby.game.drawMode = message.mode === 'direct' ? 'direct' : 'chain';
+          broadcastPlayers(metadata.lobbyId!);
+          return;
+        }
+
         case 'ready': {
           const lobby = lobbies.get(metadata.lobbyId!);
           if (!lobby) {
@@ -1137,7 +1173,7 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             broadcastToLobby(lobbyId, { action: 'win', winner: '' });
             for (const [, m] of clients) m.lobbyId === lobbyId && (m.lobbyId = null);
             sLobby.players = [];
-            sLobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false, state: LobbyGameState.normal, drawingCount: 0 };
+            sLobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false, state: LobbyGameState.normal, drawingCount: 0, drawMode: 'chain' };
             startedLobbies.delete(lobbyId);
             clearAllAITimeouts(lobbyId);
             return;
@@ -1496,6 +1532,6 @@ process.on('SIGINT', () => {
   }
 });
 
-httpServer.on('listening', () => serverLog(`Server started on port http://0.0.0.0:${PORT}`));
+httpServer.on('listening', () => serverLog(`Server started on port http://0.0.0.0:${PORT}\n`));
 httpServer.on('error', (e: Error) => { console.error(e); process.emit('SIGINT'); });
 httpServer.listen(PORT);

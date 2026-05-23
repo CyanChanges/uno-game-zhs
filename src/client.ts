@@ -62,6 +62,7 @@ interface ServerMessage {
   spectator?: boolean;
   gameState?: number;
   drawingCount?: number;
+  drawMode?: string;
   playerId?: string;
   type?: string;
   content?: string;
@@ -381,6 +382,13 @@ function connect(): void {
         updatePlayers(players, currentTurn);
         updateTurnIndicator();
         showLobbyInfo(message.lobbyId || '');
+        // Sync draw mode toggle
+        if (message.drawMode) {
+          const mode = message.drawMode;
+          document.querySelectorAll('#draw-mode-toggle-box .mode-option').forEach(el => {
+            el.classList.toggle('active', el.getAttribute('data-mode') === mode);
+          });
+        }
         break;
 
       case 'start':
@@ -696,6 +704,7 @@ function resetGameState(): void {
     hideLobbyInfo();
     readyButton.style.display = 'none';
     if (inviteAIBtn) inviteAIBtn.style.display = 'none';
+    document.getElementById('draw-mode-area')!.style.display = 'none';
 
     // Clear players list
     playersList.innerHTML = '';
@@ -821,6 +830,8 @@ function updatePlayers(newPlayers: Player[], turn: number): void {
   if (inviteAIBtn) {
     inviteAIBtn.style.display = (me && me.isCreator) ? '' : 'none';
   }
+  const drawModeArea = document.getElementById('draw-mode-area')!;
+  drawModeArea.style.display = (me && me.isCreator) ? 'flex' : 'none';
   updateReadyButton();
 
   if (countdownInterval) {
@@ -1287,6 +1298,31 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   document.getElementById('rules-close-btn')!.addEventListener('click', closeRules);
+
+  // Draw mode toggle
+  document.querySelectorAll('#draw-mode-toggle-box .mode-option').forEach(el => {
+    el.addEventListener('click', () => {
+      const mode = el.getAttribute('data-mode')!;
+      document.querySelectorAll('#draw-mode-toggle-box .mode-option').forEach(e => e.classList.remove('active'));
+      el.classList.add('active');
+      sendMessage({ action: 'set_draw_mode', mode });
+    });
+  });
+
+  // Draw mode info → opens rules and highlights the section
+  document.getElementById('draw-mode-info')!.addEventListener('click', () => {
+    rulesOverlay.classList.remove('hidden');
+    rulesOverlay.style.display = 'flex';
+    rulesBox.style.animation = 'modalIn 0.2s ease';
+    setTimeout(() => {
+      const el = document.getElementById('rules-draw-mode-highlight');
+      if (el) {
+        el.classList.remove('highlight-section');
+        void el.offsetWidth; // force reflow to restart animation
+        el.classList.add('highlight-section');
+      }
+    }, 300);
+  });
 });
 
 function copyLobbyId(): void {

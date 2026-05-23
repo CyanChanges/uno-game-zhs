@@ -23,6 +23,15 @@
             <h3>大厅: <span id="current-lobby-id"></span></h3>
             <p>分享大厅 ID 即可加入!</p>
         </div>
+        <div id="draw-mode-area"
+            style="display:none;margin-top:12px;align-items:center;justify-content:center;gap:8px;">
+            <div class="mode-toggle" id="draw-mode-toggle-box">
+                <span class="mode-option mode-left" data-mode="direct">直接加牌</span>
+                <span class="mode-option mode-right active" data-mode="chain">链式加牌</span>
+            </div>
+            <span id="draw-mode-info" style="cursor:pointer;color:#667eea;font-size:0.85rem;"
+                title="链式：+2/+4可叠加，受害者可接加牌反击&#10;直接：+2/+4直接让下家抽牌，不叠加">ⓘ</span>
+        </div>
         <ul id="players"></ul>
         <button id="invite-ai" style="display: none;">邀请 AI</button>
         <button id="ready" style="display: none;">准备</button>
@@ -52,14 +61,22 @@
         </div>
         <div id="reaction-bar">
             <div id="reaction-emojis">
-                <button class="reaction-emoji" data-emoji="😂"><img src="/icons/laugh.svg" width="24" height="24" alt="😂"></button>
-                <button class="reaction-emoji" data-emoji="😡"><img src="/icons/angry.svg" width="24" height="24" alt="😡"></button>
-                <button class="reaction-emoji" data-emoji="😱"><img src="/icons/shock.svg" width="24" height="24" alt="😱"></button>
-                <button class="reaction-emoji" data-emoji="👍"><img src="/icons/like.svg" width="24" height="24" alt="👍"></button>
-                <button class="reaction-emoji" data-emoji="👎"><img src="/icons/dislike.svg" width="24" height="24" alt="👎"></button>
-                <button class="reaction-emoji" data-emoji="🎉"><img src="/icons/party.svg" width="24" height="24" alt="🎉"></button>
-                <button class="reaction-emoji" data-emoji="😭"><img src="/icons/cry.svg" width="24" height="24" alt="😭"></button>
-                <button class="reaction-emoji" data-emoji="🔥"><img src="/icons/fire.svg" width="24" height="24" alt="🔥"></button>
+                <button class="reaction-emoji" data-emoji="😂"><img src="/icons/laugh.svg" width="24" height="24"
+                        alt="😂"></button>
+                <button class="reaction-emoji" data-emoji="😡"><img src="/icons/angry.svg" width="24" height="24"
+                        alt="😡"></button>
+                <button class="reaction-emoji" data-emoji="😱"><img src="/icons/shock.svg" width="24" height="24"
+                        alt="😱"></button>
+                <button class="reaction-emoji" data-emoji="👍"><img src="/icons/like.svg" width="24" height="24"
+                        alt="👍"></button>
+                <button class="reaction-emoji" data-emoji="👎"><img src="/icons/dislike.svg" width="24" height="24"
+                        alt="👎"></button>
+                <button class="reaction-emoji" data-emoji="🎉"><img src="/icons/party.svg" width="24" height="24"
+                        alt="🎉"></button>
+                <button class="reaction-emoji" data-emoji="😭"><img src="/icons/cry.svg" width="24" height="24"
+                        alt="😭"></button>
+                <button class="reaction-emoji" data-emoji="🔥"><img src="/icons/fire.svg" width="24" height="24"
+                        alt="🔥"></button>
             </div>
             <div id="reaction-text-area">
                 <input type="text" id="reaction-text-input" maxlength="200" placeholder="发送消息...">
@@ -104,8 +121,10 @@
             <button class="dev-btn call-win-btn" data-action="dev_call_win">🏆 胜利</button>
         </div>
     </div>
-    <div id="about-overlay" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;z-index:2000;">
-        <div id="about-box" style="background:#1e1e1e;border:1px solid #374151;border-radius:20px;padding:32px 40px;max-width:460px;width:90%;color:#e0e0e0;line-height:1.8;animation:modalIn 0.2s ease;">
+    <div id="about-overlay" class="hidden"
+        style="position:fixed;inset:0;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;z-index:2000;">
+        <div id="about-box" class="user-select-children"
+            style="background:#1e1e1e;border:1px solid #374151;border-radius:20px;padding:32px 40px;max-width:460px;width:90%;color:#e0e0e0;line-height:1.8;animation:modalIn 0.2s ease;">
             <h2 style="color:#fff;text-align:center;margin-bottom:16px;">关于</h2>
             <h3 style="color:#667eea;margin:16px 0 6px;font-size:1rem;">技术栈</h3>
             <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">TypeScript - Apache-2.0</p>
@@ -115,16 +134,22 @@
             <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">Vitest - MIT</p>
             <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">Playwright - Apache-2.0</p>
             <h3 style="color:#667eea;margin:16px 0 6px;font-size:1rem;">许可证</h3>
-            <p style="margin:2px 0;font-size:0.85rem;"><a style="color:#667eea;" href="https://opensource.org/license/bsd-3-clause" target="_blank">BSD 3-Clause License</a></p>
+            <p style="margin:2px 0;font-size:0.85rem;"><a style="color:#667eea;"
+                    href="https://opensource.org/license/bsd-3-clause" target="_blank">BSD 3-Clause License</a></p>
             <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">Copyright &copy; 2026 miruku (lovemilk)</p>
             <h3 id="about-storage-title" style="color:#667eea;margin:16px 0 6px;font-size:1rem;">存储</h3>
-            <button id="about-clear-btn" style="width:100%;padding:10px;border:none;border-radius:10px;background:linear-gradient(135deg,#ff6b6b,#ee5a24);color:#fff;font-size:0.85rem;font-weight:600;cursor:pointer;font-family:inherit;margin-bottom:8px;">清除本地存储状态</button>
-            <p id="about-clear-msg" style="color:#48bb78;text-align:center;font-size:0.8rem;display:none;margin:0;">已清除</p>
-            <button id="about-close-btn" style="width:100%;padding:10px;margin-top:16px;border:1px solid #374151;border-radius:10px;background:transparent;color:#a0aec0;font-size:0.85rem;cursor:pointer;font-family:inherit;">关闭</button>
+            <button id="about-clear-btn"
+                style="width:100%;padding:10px;border:none;border-radius:10px;background:linear-gradient(135deg,#ff6b6b,#ee5a24);color:#fff;font-size:0.85rem;font-weight:600;cursor:pointer;font-family:inherit;margin-bottom:8px;">清除本地存储状态</button>
+            <p id="about-clear-msg" style="color:#48bb78;text-align:center;font-size:0.8rem;display:none;margin:0;">已清除
+            </p>
+            <button id="about-close-btn"
+                style="width:100%;padding:10px;margin-top:16px;border:1px solid #374151;border-radius:10px;background:transparent;color:#a0aec0;font-size:0.85rem;cursor:pointer;font-family:inherit;">关闭</button>
         </div>
     </div>
-    <div id="rules-overlay" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.85);align-items:flex-start;justify-content:center;z-index:2000;overflow-y:auto;padding:40px 20px;">
-        <div id="rules-box" style="background:#1e1e1e;border:1px solid #374151;border-radius:20px;padding:32px 40px;max-width:600px;width:90%;color:#e0e0e0;line-height:1.8;animation:modalIn 0.2s ease;">
+    <div id="rules-overlay" class="hidden"
+        style="position:fixed;inset:0;background:rgba(0,0,0,0.85);align-items:flex-start;justify-content:center;z-index:2000;overflow-y:auto;padding:40px 20px;">
+        <div id="rules-box" class="user-select-children"
+            style="background:#1e1e1e;border:1px solid #374151;border-radius:20px;padding:32px 40px;max-width:600px;width:90%;color:#e0e0e0;line-height:1.8;animation:modalIn 0.2s ease;">
             <h2 style="color:#fff;text-align:center;margin-bottom:16px;">UNO 规则</h2>
 
             <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">目标</h3>
@@ -132,36 +157,62 @@
 
             <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">牌面</h3>
             <div style="display:flex;flex-wrap:wrap;gap:8px;font-size:0.8rem;color:#a0aec0;margin-bottom:8px;">
-              <span style="background:#e74c3c;color:#fff;padding:2px 8px;border-radius:4px;">红</span>
-              <span style="background:#3498db;color:#fff;padding:2px 8px;border-radius:4px;">蓝</span>
-              <span style="background:#27ae60;color:#fff;padding:2px 8px;border-radius:4px;">绿</span>
-              <span style="background:#f39c12;color:#fff;padding:2px 8px;border-radius:4px;">黄</span>
-              <span>—</span>
-              <span style="background:#2c3e50;color:#fff;padding:2px 8px;border-radius:4px;">黑★</span>
+                <span style="background:#e74c3c;color:#fff;padding:2px 8px;border-radius:4px;">红</span>
+                <span style="background:#3498db;color:#fff;padding:2px 8px;border-radius:4px;">蓝</span>
+                <span style="background:#27ae60;color:#fff;padding:2px 8px;border-radius:4px;">绿</span>
+                <span style="background:#f39c12;color:#fff;padding:2px 8px;border-radius:4px;">黄</span>
+                <span>—</span>
+                <span style="background:#2c3e50;color:#fff;padding:2px 8px;border-radius:4px;">黑★</span>
             </div>
             <table style="width:100%;font-size:0.8rem;color:#a0aec0;border-collapse:collapse;">
-              <tr><td style="padding:4px 8px;border-bottom:1px solid #374151;">数字牌</td><td style="padding:4px 8px;border-bottom:1px solid #374151;">0~9，每个颜色各一张 0、两张 1~9</td></tr>
-              <tr><td style="padding:4px 8px;border-bottom:1px solid #374151;">跳过 Ø</td><td style="padding:4px 8px;border-bottom:1px solid #374151;">跳过下一位玩家</td></tr>
-              <tr><td style="padding:4px 8px;border-bottom:1px solid #374151;">反转 ⇄</td><td style="padding:4px 8px;border-bottom:1px solid #374151;">反转出牌方向</td></tr>
-              <tr><td style="padding:4px 8px;border-bottom:1px solid #374151;">+2</td><td style="padding:4px 8px;border-bottom:1px solid #374151;">下家抽 2 张（可接 +2/+4 叠加）</td></tr>
-              <tr><td style="padding:4px 8px;border-bottom:1px solid #374151;">变色 W</td><td style="padding:4px 8px;border-bottom:1px solid #374151;">任意颜色均可出，出牌人选择下一轮颜色</td></tr>
-              <tr><td style="padding:4px 8px;border-bottom:1px solid #374151;">+4</td><td style="padding:4px 8px;border-bottom:1px solid #374151;">下家抽 4 张并选择颜色（可接 +2/+4 叠加）</td></tr>
+                <tr>
+                    <td style="padding:4px 8px;border-bottom:1px solid #374151;">数字牌</td>
+                    <td style="padding:4px 8px;border-bottom:1px solid #374151;">0~9，每个颜色各一张 0、两张 1~9</td>
+                </tr>
+                <tr>
+                    <td style="padding:4px 8px;border-bottom:1px solid #374151;">跳过 Ø</td>
+                    <td style="padding:4px 8px;border-bottom:1px solid #374151;">跳过下一位玩家</td>
+                </tr>
+                <tr>
+                    <td style="padding:4px 8px;border-bottom:1px solid #374151;">反转 ⇄</td>
+                    <td style="padding:4px 8px;border-bottom:1px solid #374151;">反转出牌方向</td>
+                </tr>
+                <tr>
+                    <td style="padding:4px 8px;border-bottom:1px solid #374151;">+2</td>
+                    <td style="padding:4px 8px;border-bottom:1px solid #374151;">下家抽 2 张（可接 +2/+4 叠加）</td>
+                </tr>
+                <tr>
+                    <td style="padding:4px 8px;border-bottom:1px solid #374151;">变色 W</td>
+                    <td style="padding:4px 8px;border-bottom:1px solid #374151;">任意颜色均可出，出牌人选择下一轮颜色</td>
+                </tr>
+                <tr>
+                    <td style="padding:4px 8px;border-bottom:1px solid #374151;">+4</td>
+                    <td style="padding:4px 8px;border-bottom:1px solid #374151;">下家抽 4 张并选择颜色（可接 +2/+4 叠加）</td>
+                </tr>
             </table>
 
             <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">出牌规则</h3>
-            <p style="font-size:0.85rem;color:#a0aec0;">出的牌必须与弃牌堆顶牌<b>颜色相同</b>或<b>类型相同</b>，或是 <b>黑牌（变色/+4）</b>。+2 和 +4 互认为同族（可互接）。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;">出的牌必须与弃牌堆顶牌<b>颜色相同</b>或<b>类型相同</b>，或是 <b>黑牌（变色/+4）</b>。+2 和 +4
+                互认为同族（可互接）。</p>
 
-            <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">加牌链</h3>
-            <p style="font-size:0.85rem;color:#a0aec0;">打出 +2 或 +4 后进入加牌状态，下家可继续打 +2/+4 叠加罚牌。若无法/不愿接，则需抽牌（点抽牌按钮）或打非 +n 牌打破链条——打破者抽所有累加的罚牌。</p>
+            <div id="rules-draw-mode-highlight">
+            <h3 id="rules-draw-mode-section" style="color:#667eea;margin:20px 0 8px;font-size:1rem;">加牌模式</h3>
+            <p style="font-size:0.85rem;color:#a0aec0;"><b>链式加牌</b>（默认）：打出 +2 或 +4 后进入加牌状态，下家可继续打 +2/+4
+                叠加罚牌。若无法/不愿接，则需抽牌或打非 +n 牌打破链条——打破者抽所有累加的罚牌。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;margin-top:4px;"><b>直接加牌</b>：+2/+4
+                 直接让下家抽对应张数，不叠加、不进入加牌状态。房主可在准备阶段切换此模式。</p>
+            </div>
 
             <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">认输 · 观战</h3>
             <p style="font-size:0.85rem;color:#a0aec0;">2 人局认输 = 对手胜。≥3 人局认输可选择进入观战模式继续观战，或离开房间。</p>
 
-            <button id="rules-close-btn" style="width:100%;padding:10px;margin-top:24px;border:1px solid #374151;border-radius:10px;background:transparent;color:#a0aec0;font-size:0.85rem;cursor:pointer;font-family:inherit;">关闭</button>
+            <button id="rules-close-btn"
+                style="width:100%;padding:10px;margin-top:24px;border:1px solid #374151;border-radius:10px;background:transparent;color:#a0aec0;font-size:0.85rem;cursor:pointer;font-family:inherit;">关闭</button>
         </div>
     </div>
     <footer class="user-select">Copyright (C) 2026 miruku (lovemilk), <a target="_blank"
-            href="https://aka.lovemilk.top/github/uno-game-zhs/blob/main/LICENSE">BSD 3-Clause License</a> · <a href="#" id="rules-link">规则</a> · <a href="#" id="about-link">关于</a></footer>
+            href="https://aka.lovemilk.top/github/uno-game-zhs/blob/main/LICENSE">BSD 3-Clause License</a> · <a href="#"
+            id="rules-link">规则</a> · <a href="#" id="about-link">关于</a></footer>
     <script src="client.js"></script>
 </body>
 

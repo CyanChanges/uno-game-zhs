@@ -1343,4 +1343,64 @@ describe('UNO Client', () => {
 
     await page.close()
   })
+
+  it('draw mode toggle visible to creator, not to others', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    // A creates room
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', 'dmode')
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+
+    // A should see the toggle (is creator)
+    const aSees = await pageA.evaluate(() => {
+      const el = document.getElementById('draw-mode-area')
+      return el ? el.style.display !== 'none' : false
+    })
+    expect(aSees).toBe(true)
+
+    // Info title should describe both modes
+    const infoTitle = await pageA.$eval('#draw-mode-info', el => el.title)
+    expect(infoTitle).toContain('链式')
+
+    // Click info — should open rules modal
+    await pageA.click('#draw-mode-info')
+    await pageA.waitForTimeout(500)
+    const rulesVisible = await pageA.evaluate(() => {
+      const el = document.getElementById('rules-overlay')
+      return el && !el.classList.contains('hidden')
+    })
+    expect(rulesVisible).toBe(true)
+    // Close rules modal
+    await pageA.click('#rules-close-btn')
+    await pageA.waitForTimeout(300)
+
+    // B joins
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', 'dmode')
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+
+    // B should NOT see the toggle
+    const bSees = await pageB.evaluate(() => {
+      const el = document.getElementById('draw-mode-area')
+      return el ? el.style.display !== 'none' : false
+    })
+    expect(bSees).toBe(false)
+
+    // A clicks "直接加牌" option
+    await pageA.evaluate(() => {
+      document.querySelector('.mode-left').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await pageA.waitForTimeout(300)
+    const directActive = await pageA.evaluate(() => document.querySelector('.mode-left').classList.contains('active'))
+    expect(directActive).toBe(true)
+
+    await pageA.close()
+    await pageB.close()
+  })
 })
