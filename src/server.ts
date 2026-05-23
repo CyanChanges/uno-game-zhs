@@ -1161,8 +1161,8 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
 
           const remaining = sLobby.players.filter(p => p.id !== metadata.id);
           const realRemaining = remaining.filter(p => !p.isAI);
-          // No human players left AND multiple opponents → nobody won
-          if (realRemaining.length === 0 && remaining.length > 1) {
+          // No human players left → nobody won
+          if (realRemaining.length === 0) {
             const lobbyId = metadata.lobbyId!;
             if (surrenderPlayer.hand) sLobby.game.discardPile.push(...surrenderPlayer.hand);
             const idx = sLobby.players.indexOf(surrenderPlayer);
@@ -1178,7 +1178,7 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             clearAllAITimeouts(lobbyId);
             return;
           }
-          // Single opponent → standard surrender, opponent wins (even if AI)
+          // Single opponent → standard surrender, opponent wins
           if (remaining.length <= 1) {
             const winner = remaining[0];
             if (winner) broadcastWin(metadata.lobbyId!, winner.name);

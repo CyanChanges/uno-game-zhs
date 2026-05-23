@@ -443,7 +443,9 @@ function connect(): void {
 
       case 'win':
         if (isSpectating) {
-          showAlert(`${message.winner || '-'} 赢得了游戏！`).then(() => {
+          const winnerMessage = message.winner?.length ? `${message.winner} 赢得了游戏！` : '没有人赢得了游戏, 所有真人玩家已离开对局'
+
+          showAlert(winnerMessage).then(() => {
             resetGameState();
           });
         } else {
