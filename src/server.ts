@@ -1,13 +1,10 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { Server, IncomingMessage, ServerResponse } from 'http';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import path from 'path';
 import { decideMove } from './aiplayer';
 import { ERR, errorResponse, ErrorCode } from './errors';
 import { RECONNECT_DEFER_MS, RECONNECT_DEADLINE_MS, DISCONNECT_REMOVE_MS, MAX_HAND_CARDS, NAME_LENGTH_MIN, NAME_LENGTH_MAX } from './constants';
-
-const PKG = JSON.parse(readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
-const VERSION = PKG.version || '1.0.0';
 
 interface Card {
   color?: string;
@@ -85,17 +82,41 @@ type StaticFile = [string, string];
 const allowFiles: StaticFile[] = [['index.html', 'text/html'], ['client.js', 'text/javascript'], ['style.css', 'text/css']];
 const files: Record<string, { content: Buffer; type: string }> = {};
 
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+
+function safeResolve(...segments: string[]): string | null {
+  const resolved = path.resolve(...segments);
+  const cwd = path.resolve(process.cwd());
+  return resolved.startsWith(cwd + path.sep) || resolved === cwd ? resolved : null;
+}
+
+const PKG = JSON.parse(readFileSync(safeResolve(PROJECT_ROOT, 'package.json')!, 'utf-8'));
+const VERSION = PKG.version || '1.0.0';
+
 function loadStaticFiles(): void {
   for (const [file, type] of allowFiles) {
-    let fullPath = path.join(__dirname, file);
-    try { readFileSync(fullPath); } catch (_e) {
+    let fullPath = safeResolve(__dirname, file);
+    if (!fullPath || !existsSync(fullPath)) {
       if (file === 'client.js') {
-        fullPath = path.join(__dirname, '..', 'dist', file);
+        fullPath = safeResolve(PROJECT_ROOT, 'dist', file);
       } else {
-        fullPath = path.join(__dirname, '..', 'public', file);
+        fullPath = safeResolve(PROJECT_ROOT, 'public', file);
       }
     }
+    if (!fullPath) continue;
     files[file] = { content: readFileSync(fullPath), type };
+  }
+  // Preload icon SVGs
+  for (const dir of ['icons', path.join('public', 'icons')]) {
+    const iconsDir = path.resolve(PROJECT_ROOT, dir);
+    if (!existsSync(iconsDir)) continue;
+    for (const f of readdirSync(iconsDir)) {
+      if (!f.endsWith('.svg')) continue;
+      const key = `icons/${f.toLowerCase()}`;
+      const iconPath = safeResolve(iconsDir, f);
+      if (!iconPath) continue;
+      files[key] = { content: readFileSync(iconPath), type: 'image/svg+xml' };
+    }
   }
 }
 
@@ -125,21 +146,12 @@ const httpServer = new Server((req: IncomingMessage, res: ServerResponse) => {
     }));
   }
 
-  // Serve icon SVGs from /icons/ path or static icons directory
-  if (url.startsWith('/icons/')) {
-    const iconFile = filename.slice(6); // remove "icons/"
-    if (iconFile) {
-      try {
-        let iconPath = path.join(__dirname, 'icons', iconFile);
-        if (!existsSync(iconPath)) {
-          iconPath = path.join(__dirname, '..', 'public', 'icons', iconFile);
-        }
-        const content = readFileSync(iconPath);
-        res.setHeader('Content-Type', 'image/svg+xml');
-        res.setHeader('Cache-Control', 'public, max-age=86400');
-        return res.end(content);
-      } catch (_e) { /* fall through */ }
-    }
+  // Serve icon SVGs from cache
+  if (url.startsWith('/icons/') && filename in files) {
+    const { content, type } = files[filename];
+    res.setHeader('Content-Type', type);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.end(content);
   }
 
   if (!!filename && filename in files) {
