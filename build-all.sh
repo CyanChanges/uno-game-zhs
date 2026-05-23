@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 
-set -e
+set -euo pipefail
 
 ./build.sh win
 ./build.sh linux arm64

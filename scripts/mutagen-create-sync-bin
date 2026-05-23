@@ -1,5 +1,7 @@
 #!/usr/bin/bash
 
+set -euo pipefail
+
 mutagen sync create --name=uno-bin-sync \
   ./bin/windows \
   milkwin2:'C:\Users\Admin\Desktop\workspace\uno-game-zhs' \

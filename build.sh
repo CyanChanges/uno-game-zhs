@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 
-set -eu
+set -euo pipefail
 
 BIN_DIR="bin/"
 VERSION=$(jq -r '.version' package.json)
