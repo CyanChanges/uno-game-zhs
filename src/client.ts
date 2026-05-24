@@ -73,73 +73,142 @@ let NAME_LENGTH_MIN = 2;
 let NAME_LENGTH_MAX = 32;
 const CH_NAME = 'uno-game';
 let tabSlot = 0;
+// Stable per-tab identifier used to resolve same-slot conflicts deterministically.
+const TAB_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 function slotKey(k: string): string { return `${k}-${tabSlot || 1}`; }
+
+// Resolves once this tab knows its slot. Code that loads UI state from
+// `store` must await this; otherwise it falls back to the legacy plain
+// localStorage key, which is shared across tabs and gets overwritten by
+// whichever tab wrote last (so all tabs would read the same value).
+let resolveSlotReady: () => void = () => {};
+const slotReady: Promise<void> = new Promise(r => { resolveSlotReady = r; });
+
+// Writes that arrived before the slot was assigned. Replayed once the slot
+// is known so they land in the slot-scoped localStorage key (and survive
+// the tab being closed).
+const pendingWrites = new Map<string, string | null>();
 
 const store = {
   get(k: string): string | null {
     return sessionStorage.getItem(k)
       ?? (tabSlot ? localStorage.getItem(slotKey(k)) : null)
+      // Legacy fallback for users upgrading from a pre-slot build. Only ever
+      // read, never written, so concurrent tabs cannot stomp on each other.
       ?? localStorage.getItem(k);
   },
   set(k: string, v: string): void {
     sessionStorage.setItem(k, v);
-    localStorage.setItem(k, v);
     if (tabSlot) localStorage.setItem(slotKey(k), v);
+    else pendingWrites.set(k, v);
   },
   remove(k: string): void {
-    localStorage.removeItem(slotKey(k));
+    if (tabSlot) localStorage.removeItem(slotKey(k));
+    else pendingWrites.set(k, null);
     localStorage.removeItem(k);
     sessionStorage.removeItem(k);
   },
 };
 
 // ── BroadcastChannel slot negotiation ────────────────────
+// Distributed (no central host): every tab heartbeats its own slot and listens
+// for peers. A tab picks the smallest unclaimed positive integer based on what
+// it has heard. Closing any tab — including whichever tab opened first — never
+// strands the rest, because no single host owns the allocation table.
+// Same-slot collisions (e.g. after a stale entry was reused, or two new tabs
+// racing) are resolved by letting the tab with the larger TAB_ID drop and
+// re-elect.
 const ch = new BroadcastChannel(CH_NAME);
-let isHost = false;
-const activeSlots = new Set<number>();
+const HEARTBEAT_MS = 1500;
+const STALE_MS = 4000;
+const ELECTION_MS = 250;
+interface SlotInfo { tabId: string; lastSeen: number }
+const knownSlots = new Map<number, SlotInfo>();
+let electionTimer: ReturnType<typeof setTimeout> | null = null;
+
+function pruneStaleSlots(): void {
+  const now = Date.now();
+  for (const [s, info] of knownSlots) {
+    if (info.tabId === TAB_ID) continue;
+    if (now - info.lastSeen > STALE_MS) knownSlots.delete(s);
+  }
+}
+
+function pickFreeSlot(): number {
+  pruneStaleSlots();
+  let s = 1;
+  while (knownSlots.has(s)) s++;
+  return s;
+}
+
+function claimSlot(slot: number): void {
+  tabSlot = slot;
+  sessionStorage.setItem('unoSlot', String(slot));
+  knownSlots.set(slot, { tabId: TAB_ID, lastSeen: Date.now() });
+  ch.postMessage({ type: 'heartbeat', slot, tabId: TAB_ID });
+  // Flush any writes that happened during the election window.
+  for (const [k, v] of pendingWrites) {
+    if (v === null) localStorage.removeItem(slotKey(k));
+    else localStorage.setItem(slotKey(k), v);
+  }
+  pendingWrites.clear();
+  resolveSlotReady();
+}
+
+function runElection(): void {
+  if (electionTimer !== null) return;
+  ch.postMessage({ type: 'who', tabId: TAB_ID });
+  electionTimer = setTimeout(() => {
+    electionTimer = null;
+    if (tabSlot !== 0) return; // already claimed during the wait window
+    claimSlot(pickFreeSlot());
+  }, ELECTION_MS);
+}
 
 ch.onmessage = (e: MessageEvent) => {
   const d = e.data;
-  if (d.type === 'request-slot' && isHost) {
-    let s = 1;
-    while (activeSlots.has(s)) s++;
-    activeSlots.add(s);
-    ch.postMessage({ type: 'assign-slot', slot: s });
-  } else if (d.type === 'request-slot') {
-    // Not host, forward to host (handled by host's handler above)
-  } else if (d.type === 'assign-slot' && d.slot) {
-    tabSlot = d.slot;
-    sessionStorage.setItem('unoSlot', String(tabSlot));
-    activeSlots.add(tabSlot);
-  } else if (d.type === 'host-ping') {
-    // Host is alive, no action needed
-  } else if (d.type === 'host-closing') {
-    if (d.slot) activeSlots.delete(d.slot);
+  if (!d || typeof d !== 'object') return;
+  if (d.type === 'heartbeat' && typeof d.slot === 'number' && typeof d.tabId === 'string') {
+    knownSlots.set(d.slot, { tabId: d.tabId, lastSeen: Date.now() });
+    // Same-slot collision: keep the tab with the lexicographically smaller id.
+    if (d.slot === tabSlot && d.tabId !== TAB_ID && d.tabId < TAB_ID) {
+      tabSlot = 0;
+      sessionStorage.removeItem('unoSlot');
+      runElection();
+    }
+  } else if (d.type === 'who') {
+    if (tabSlot) ch.postMessage({ type: 'heartbeat', slot: tabSlot, tabId: TAB_ID });
+  } else if (d.type === 'bye' && typeof d.slot === 'number' && typeof d.tabId === 'string') {
+    const cur = knownSlots.get(d.slot);
+    if (cur && cur.tabId === d.tabId) knownSlots.delete(d.slot);
   }
 };
 
 ch.onmessageerror = () => { /* ignore */ };
 
-// Become host or request slot
-setTimeout(() => {
-  ch.postMessage({ type: 'request-slot' });
-  // If no response within 200ms, become host
-  setTimeout(() => {
-    if (tabSlot !== 0) return;
-    isHost = true;
-    tabSlot = 1;
-    activeSlots.add(1);
-    sessionStorage.setItem('unoSlot', '1');
-    // Heartbeat
-    setInterval(() => { if (isHost) ch.postMessage({ type: 'host-ping' }); }, 3000);
-    // On close, announce
-    window.addEventListener('beforeunload', () => {
-      ch.postMessage({ type: 'host-closing', slot: tabSlot });
-      ch.close();
-    });
-  }, 200);
-}, 50);
+// Boot: reuse the slot remembered for this tab (survives F5), else negotiate.
+(() => {
+  const stored = Number(sessionStorage.getItem('unoSlot'));
+  if (Number.isFinite(stored) && stored > 0) {
+    claimSlot(stored);
+    // Probe so that, if another tab grabbed our slot while we were reloading,
+    // the same-slot conflict resolution kicks in promptly.
+    ch.postMessage({ type: 'who', tabId: TAB_ID });
+  } else {
+    runElection();
+  }
+})();
+
+setInterval(() => {
+  pruneStaleSlots();
+  if (tabSlot) ch.postMessage({ type: 'heartbeat', slot: tabSlot, tabId: TAB_ID });
+}, HEARTBEAT_MS);
+
+window.addEventListener('beforeunload', () => {
+  if (tabSlot) ch.postMessage({ type: 'bye', slot: tabSlot, tabId: TAB_ID });
+  ch.close();
+});
 const CLIENT_PREFIX = '[client]';
 function clientLog(msg: string, ...args: unknown[]): void {
   console.log(`${CLIENT_PREFIX} ${msg}`, ...args);
@@ -283,28 +352,35 @@ function connect(): void {
     }).catch(() => {});
     const btn = document.getElementById('dev-disconnect-btn');
     if (btn) btn.textContent = '断开';
-    const savedId = store.get('unoPlayerId');
-    clientLog(`onopen savedId=${savedId ? savedId.slice(0, 8) : null} actionQueue=${actionQueue.length}`);
-    // Always pre-fill name/lobby from storage
-    nameInput.value = store.get('unoPlayerName') || '';
-    lobbyIdInput.value = store.get('unoLobbyId') || '';
-    if (savedId) {
-      justReconnected = true;
-      sendMessage({ action: 'reconnect', playerId: savedId });
-    } else if (!store.get('unoLeftLobby')) {
-      const savedName = store.get('unoPlayerName');
-      const savedLobbyId = '';
-      if (savedName && savedLobbyId) {
-        const msg: Record<string, string> = { action: 'join', name: savedName, lobbyId: savedLobbyId };
-        if (savedId) msg.playerId = savedId;
-        clientLog(`onopen fallback join name=${savedName}`);
-        sendMessage(msg);
+    // Wait for the slot to be assigned before reading per-tab state, otherwise
+    // store.get falls back to the legacy plain localStorage key (shared across
+    // tabs) and every tab would see the value written by whichever tab wrote
+    // last.
+    slotReady.then(() => {
+      if (newWs !== currentWs) return;
+      const savedId = store.get('unoPlayerId');
+      clientLog(`onopen savedId=${savedId ? savedId.slice(0, 8) : null} actionQueue=${actionQueue.length}`);
+      // Always pre-fill name/lobby from storage
+      nameInput.value = store.get('unoPlayerName') || '';
+      lobbyIdInput.value = store.get('unoLobbyId') || '';
+      if (savedId) {
+        justReconnected = true;
+        sendMessage({ action: 'reconnect', playerId: savedId });
+      } else if (!store.get('unoLeftLobby')) {
+        const savedName = store.get('unoPlayerName');
+        const savedLobbyId = '';
+        if (savedName && savedLobbyId) {
+          const msg: Record<string, string> = { action: 'join', name: savedName, lobbyId: savedLobbyId };
+          if (savedId) msg.playerId = savedId;
+          clientLog(`onopen fallback join name=${savedName}`);
+          sendMessage(msg);
+        }
+        hideDisconnectedToast();
+      } else {
+        store.remove('unoLeftLobby');
+        hideDisconnectedToast();
       }
-      hideDisconnectedToast();
-    } else {
-      store.remove('unoLeftLobby');
-      hideDisconnectedToast();
-    }
+    });
   };
 
   newWs.onmessage = async (event: MessageEvent) => {
@@ -666,13 +742,16 @@ function showLobbyInfo(lobbyId: string): void {
 }
 
 function attemptRejoin(): void {
-  const savedLobbyId = '';
-  const savedPlayerName = store.get('unoPlayerName');
+  // Per-tab state may not be readable yet during the slot election window.
+  slotReady.then(() => {
+    const savedLobbyId = '';
+    const savedPlayerName = store.get('unoPlayerName');
 
-  if (savedLobbyId && savedPlayerName) {
-    lobbyIdInput.value = savedLobbyId;
-    nameInput.value = savedPlayerName;
-  }
+    if (savedLobbyId && savedPlayerName) {
+      lobbyIdInput.value = savedLobbyId;
+      nameInput.value = savedPlayerName;
+    }
+  });
 }
 
 function resetGameState(): void {
@@ -1275,8 +1354,13 @@ document.addEventListener('DOMContentLoaded', () => {
     ['unoPlayerName', 'unoLobbyId', 'unoPlayerId', 'unoInLobby', 'unoInGame', 'unoLeftLobby', 'unoCardLayout'].forEach(k => {
       [`${k}-${s}`, k].forEach(sk => { sessionStorage.removeItem(sk); localStorage.removeItem(sk); });
     });
-    sessionStorage.removeItem('unoSlot'); tabSlot = 0; storageCleared = true;
-    if (isHost) { ch.postMessage({ type: 'host-closing', slot: s }); isHost = false; }
+    sessionStorage.removeItem('unoSlot');
+    if (tabSlot) {
+      ch.postMessage({ type: 'bye', slot: tabSlot, tabId: TAB_ID });
+      knownSlots.delete(tabSlot);
+    }
+    tabSlot = 0;
+    storageCleared = true;
     const msg = document.getElementById('about-clear-msg')!;
     msg.style.display = 'block';
     setTimeout(() => { msg.style.display = 'none'; }, 2000);

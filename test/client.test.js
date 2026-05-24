@@ -365,7 +365,10 @@ describe('UNO Client', () => {
     expect(initialDisplay).toMatch(/（\d+ 张牌）/)
 
     // B closes page (disconnect)
-    const bobId = await pageB.evaluate(() => localStorage.getItem('unoPlayerId'))
+    // store.set writes to sessionStorage (always) and to a slot-scoped
+    // localStorage key (e.g. unoPlayerId-1). It no longer writes the plain
+    // localStorage key, so read sessionStorage here.
+    const bobId = await pageB.evaluate(() => sessionStorage.getItem('unoPlayerId'))
     await pageB.close()
 
     // Wait for A to see B as disconnected (processClose fires)
@@ -1402,5 +1405,62 @@ describe('UNO Client', () => {
 
     await pageA.close()
     await pageB.close()
+  })
+
+  // Regression: three tabs sharing localStorage should each restore their own
+  // saved name after a full close-reopen cycle. Previously store.set wrote a
+  // shared plain key on every keystroke, so the last writer ("33") clobbered
+  // the others, and on reopen the slot election (~250 ms) had not finished
+  // yet, so onopen fell back to that shared key — every tab showed "33".
+  it('three tabs each restore their own name after close-reopen', { timeout: 30000 }, async () => {
+    // newPage() on a Browser creates a fresh BrowserContext per page, which
+    // gives each "tab" its own isolated localStorage — the opposite of what
+    // real browser tabs do, and would mask the bug. Use a single shared
+    // context so all three pages share storage like real tabs.
+    const ctx = await browser.newContext()
+    const NAMES = ['11', '22', '33']
+
+    async function openTab() {
+      const p = await ctx.newPage()
+      await p.goto(BASE)
+      await p.waitForSelector('#name')
+      // Wait past the slot election window (~250 ms) plus a little slack.
+      await p.waitForFunction(() => Number(sessionStorage.getItem('unoSlot')) > 0, { timeout: 5000 })
+      return p
+    }
+
+    // Round 1: open three tabs, fill different names.
+    const round1 = []
+    for (let i = 0; i < 3; i++) {
+      const p = await openTab()
+      await p.fill('#name', NAMES[i])
+      // Blur so the input handler that calls store.set finishes synchronously.
+      await p.locator('#name').press('Tab')
+      round1.push(p)
+    }
+
+    // Sanity: while all tabs are open, none should have lost its own value.
+    for (let i = 0; i < 3; i++) {
+      const v = await round1[i].locator('#name').inputValue()
+      expect(v).toBe(NAMES[i])
+    }
+
+    // Close all three tabs and let the bye/prune logic settle.
+    for (const p of round1) await p.close()
+    await new Promise(r => setTimeout(r, 300))
+
+    // Round 2: reopen three tabs. Each should restore one of the saved names,
+    // and collectively they must cover {11, 22, 33} with no duplicates.
+    const round2 = []
+    for (let i = 0; i < 3; i++) round2.push(await openTab())
+
+    const restored = []
+    for (const p of round2) restored.push(await p.locator('#name').inputValue())
+
+    expect([...restored].sort()).toEqual([...NAMES].sort())
+    expect(new Set(restored).size).toBe(3)
+
+    for (const p of round2) await p.close()
+    await ctx.close()
   })
 })
