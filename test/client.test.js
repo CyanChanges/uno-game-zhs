@@ -891,6 +891,14 @@ describe('UNO Client', () => {
       await pageA.waitForTimeout(500)
     }
 
+    // Give A a matching draw2 so the play is legitimate. The server rejects
+    // plays of cards not actually in the hand (security fix), so tests can
+    // no longer fabricate cards through `sendMessage`.
+    await pageA.evaluate((color) => {
+      sendMessage({ action: 'dev_give_card', card: { color: color, type: 'draw2' } })
+    }, topInfo.color)
+    await pageA.waitForTimeout(300)
+
     // A plays draw2
     await pageA.evaluate((color) => {
       sendMessage({ action: 'play', card: { color: color, type: 'draw2' } })
@@ -985,6 +993,12 @@ describe('UNO Client', () => {
       const card = document.querySelector('#discard-pile .card')
       return card ? card.getAttribute('data-color') : 'red'
     })
+    // Give A a matching draw2 so the play is legitimate. The server rejects
+    // plays of cards not actually in the hand (security fix).
+    await pageA.evaluate((color) => {
+      sendMessage({ action: 'dev_give_card', card: { color: color, type: 'draw2' } })
+    }, topColor)
+    await pageA.waitForTimeout(300)
     await pageA.evaluate((color) => {
       sendMessage({ action: 'play', card: { color: color, type: 'draw2' } })
     }, topColor)

@@ -124,4 +124,205 @@ describe('Security', () => {
     expect(c.ws.readyState).toBe(1)
     c.close()
   })
+
+  // ── Regression tests for the audit findings ──────────
+
+  it('does not crash on prototype-chain static routes', async () => {
+    // GET /__proto__ used to bypass `filename in files` whitelist (because
+    // `in` walks the prototype chain) and crash the process via
+    // res.setHeader('Content-Type', undefined).
+    for (const k of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      const resp = await fetch(`${BASE}/${k}`)
+      expect(resp.status).toBe(404)
+    }
+    // Server must still respond to legitimate requests after the probe.
+    const ok = await fetch(`${BASE}/index.html`)
+    expect(ok.status).toBe(200)
+  })
+
+  it('rejects WebSocket upgrades from a foreign Origin', async () => {
+    // Cross-Site WebSocket Hijacking guard.
+    await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, {
+        headers: { Origin: 'http://evil.example.com' },
+      })
+      const t = setTimeout(() => { try { ws.terminate() } catch {}; resolve() }, 1500)
+      let opened = false
+      ws.on('open', () => { opened = true })
+      ws.on('error', () => {})
+      ws.on('close', () => {
+        clearTimeout(t)
+        expect(opened).toBe(false)
+        resolve()
+      })
+    })
+  })
+
+  it('does not crash when a client sends an oversized frame', async () => {
+    // Without an `error` handler on the ws instance, a too-large frame
+    // raises an unhandled error event and kills the entire process.
+    const c = await trackedWs()
+    await c.next()
+    const big = JSON.stringify({ action: 'join', name: 'X', lobbyId: 'Y', payload: 'A'.repeat(200_000) })
+    try { c.ws.send(big) } catch {}
+    await new Promise(r => setTimeout(r, 800))
+
+    // A new client must still be able to join — proves the server is alive.
+    const c2 = await trackedWs()
+    const init2 = await c2.next()
+    expect(init2.action).toBe('init')
+    c2.close()
+  })
+
+  it('rejects oversized lobbyId', async () => {
+    const c = await trackedWs()
+    await c.next()
+    c.ws.send(JSON.stringify({ action: 'join', name: 'tester', lobbyId: 'X'.repeat(1000) }))
+    const msg = await c.next()
+    expect(msg.action).toBe('error')
+    c.close()
+  })
+
+  it('rejects lobbyId containing control characters', async () => {
+    const c = await trackedWs()
+    await c.next()
+    c.ws.send(JSON.stringify({ action: 'join', name: 'tester', lobbyId: 'A\x00B' }))
+    const msg = await c.next()
+    expect(msg.action).toBe('error')
+    c.close()
+  })
+
+  it('rejects play of a card not in the player hand', async () => {
+    const a = await trackedWs(); const b = await trackedWs()
+    await a.next(); await b.next()
+    a.ws.send(JSON.stringify({ action: 'join', name: 'AAA', lobbyId: 'forge1' }))
+    await new Promise(r => setTimeout(r, 100))
+    b.ws.send(JSON.stringify({ action: 'join', name: 'BBB', lobbyId: 'forge1' }))
+    await new Promise(r => setTimeout(r, 100))
+    a.ws.send(JSON.stringify({ action: 'ready' }))
+    b.ws.send(JSON.stringify({ action: 'ready' }))
+
+    // Wait until either side gets the start frame.
+    let myStart = null
+    for (let i = 0; i < 30 && !myStart; i++) {
+      try { const m = await a.next(150); if (m.action === 'start') myStart = m } catch {}
+      if (!myStart) {
+        try { const m = await b.next(150); if (m.action === 'start') myStart = m } catch {}
+      }
+    }
+    expect(myStart).not.toBeNull()
+    const turnId = myStart.players[myStart.turn].id
+    const turnSocket = (turnId === myStart.id ? a : b)
+    const top = myStart.discardPile[myStart.discardPile.length - 1]
+
+    // Forge a same-color draw2 (which the validator accepts) but which the
+    // current player almost certainly does not hold. If they happen to hold
+    // it, fall back to a same-color skip.
+    let fake = { color: top.color, type: 'draw2' }
+    if ((myStart.hand || []).some(c => c.color === fake.color && c.type === fake.type)) {
+      fake = { color: top.color, type: 'skip' }
+    }
+
+    turnSocket.ws.send(JSON.stringify({ action: 'play', card: fake }))
+    await new Promise(r => setTimeout(r, 300))
+
+    // No 'update' carrying our forged card on top should have arrived.
+    const drainOne = async (sock) => {
+      try { return await sock.next(150) } catch { return null }
+    }
+    let lastUpdate = null
+    for (let i = 0; i < 5; i++) {
+      const m = await drainOne(b)
+      if (m && m.action === 'update') lastUpdate = m
+    }
+    if (lastUpdate) {
+      const t = lastUpdate.discardPile[lastUpdate.discardPile.length - 1]
+      // Either the discard top is unchanged or it isn't the forged card.
+      expect(!(t.type === fake.type && t.color === fake.color)).toBe(true)
+    }
+    a.close(); b.close()
+  })
+
+  it('caps the AI count per lobby', async () => {
+    const c = await trackedWs()
+    await c.next()
+    c.ws.send(JSON.stringify({ action: 'join', name: 'aispam', lobbyId: 'aispam-cap' }))
+    await new Promise(r => setTimeout(r, 150))
+    for (let i = 0; i < 20; i++) {
+      c.ws.send(JSON.stringify({ action: 'add_ai' }))
+    }
+    await new Promise(r => setTimeout(r, 400))
+    // Drain everything and find the most recent players frame.
+    let last = null
+    for (let i = 0; i < 50; i++) {
+      try { const m = await c.next(80); if (m.action === 'players') last = m } catch { break }
+    }
+    expect(last).not.toBeNull()
+    const aiCount = last.players.filter(p => p.isAI).length
+    expect(aiCount).toBeLessThanOrEqual(10)
+    c.close()
+  })
+
+  it('rejects oversized emoji reactions', async () => {
+    // emoji content used to be passed through unchecked. Build a real game
+    // first, then attempt to broadcast an enormous emoji and ensure no peer
+    // receives it.
+    const a = await trackedWs(); const b = await trackedWs()
+    await a.next(); await b.next()
+    a.ws.send(JSON.stringify({ action: 'join', name: 'rA', lobbyId: 'reactlim' }))
+    await new Promise(r => setTimeout(r, 100))
+    b.ws.send(JSON.stringify({ action: 'join', name: 'rB', lobbyId: 'reactlim' }))
+    await new Promise(r => setTimeout(r, 100))
+    a.ws.send(JSON.stringify({ action: 'ready' }))
+    b.ws.send(JSON.stringify({ action: 'ready' }))
+    // Wait until game is started.
+    let started = false
+    for (let i = 0; i < 30 && !started; i++) {
+      try { const m = await b.next(150); if (m.action === 'start') started = true } catch {}
+    }
+    expect(started).toBe(true)
+
+    a.ws.send(JSON.stringify({ action: 'reaction', type: 'emoji', content: 'X'.repeat(20000) }))
+    await new Promise(r => setTimeout(r, 300))
+    let gotReaction = false
+    for (let i = 0; i < 5; i++) {
+      try { const m = await b.next(100); if (m.action === 'reaction') gotReaction = true } catch { break }
+    }
+    expect(gotReaction).toBe(false)
+
+    a.ws.send(JSON.stringify({ action: 'reaction', type: 'emoji', content: { hostile: true } }))
+    await new Promise(r => setTimeout(r, 300))
+    for (let i = 0; i < 5; i++) {
+      try {
+        const m = await b.next(100)
+        if (m.action === 'reaction' && typeof m.content === 'object') gotReaction = true
+      } catch { break }
+    }
+    expect(gotReaction).toBe(false)
+    a.close(); b.close()
+  })
+
+  it('spectate validates name length', async () => {
+    // Bring up an active game so spectate has something to attach to.
+    const a = await trackedWs(); const b = await trackedWs()
+    await a.next(); await b.next()
+    a.ws.send(JSON.stringify({ action: 'join', name: 'sx1', lobbyId: 'specval' }))
+    await new Promise(r => setTimeout(r, 100))
+    b.ws.send(JSON.stringify({ action: 'join', name: 'sx2', lobbyId: 'specval' }))
+    await new Promise(r => setTimeout(r, 100))
+    a.ws.send(JSON.stringify({ action: 'ready' }))
+    b.ws.send(JSON.stringify({ action: 'ready' }))
+    let started = false
+    for (let i = 0; i < 30 && !started; i++) {
+      try { const m = await a.next(150); if (m.action === 'start') started = true } catch {}
+    }
+    expect(started).toBe(true)
+
+    const c = await trackedWs(); await c.next()
+    c.ws.send(JSON.stringify({ action: 'spectate', lobbyId: 'specval', name: 'X'.repeat(10000) }))
+    const msg = await c.next()
+    expect(msg.action).toBe('error')
+    c.close()
+    a.close(); b.close()
+  })
 })
