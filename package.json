@@ -2,7 +2,7 @@
   "name": "uno",
   "version": "0.1.0.3",
   "scripts": {
-    "build": "tsc -p tsconfig.server.json && tsc -p tsconfig.client.json && npx terser dist/server.js -c -m -o dist/server.js && npx terser dist/client.js -c -m -o dist/client.js && npx terser dist/aiplayer.js -c -m -o dist/aiplayer.js && cp public/index.html dist/ && cp public/style.css dist/ && cp -r public/icons dist/",
+    "build": "node scripts/gen-icon-manifest.js && tsc -p tsconfig.server.json && tsc -p tsconfig.client.json && cp public/index.html dist/ && cp public/style.css dist/ && cp -r public/icons dist/",
     "start": "node dist/server.js",
     "start:dev": "NODE_ENV=development nodemon dist/server.js",
     "dev": "NODE_ENV=development nodemon --watch src --watch public --ext ts,html,css --exec 'npm run build && node dist/server.js'",

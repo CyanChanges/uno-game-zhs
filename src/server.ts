@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { Server, IncomingMessage, ServerResponse } from 'http';
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { decideMove } from './aiplayer';
 import { ERR, errorResponse, ErrorCode } from './errors';
@@ -89,7 +89,10 @@ const PROJECT_ROOT = path.resolve(__dirname, '..');
 function safeResolve(...segments: string[]): string | null {
   const resolved = path.resolve(...segments);
   const cwd = path.resolve(process.cwd());
-  return resolved.startsWith(cwd + path.sep) || resolved === cwd ? resolved : null;
+  const root = path.resolve(__dirname, '..');
+  if (resolved.startsWith(cwd + path.sep) || resolved === cwd) return resolved;
+  if (resolved.startsWith(root + path.sep) || resolved === root) return resolved;
+  return null;
 }
 
 const PKG = JSON.parse(readFileSync(safeResolve(PROJECT_ROOT, 'package.json')!, 'utf-8'));
@@ -108,14 +111,19 @@ function loadStaticFiles(): void {
     if (!fullPath) continue;
     files[file] = { content: readFileSync(fullPath), type };
   }
-  // Preload icon SVGs
-  for (const dir of ['icons', path.join('public', 'icons')]) {
-    const iconsDir = path.resolve(PROJECT_ROOT, dir);
-    if (!existsSync(iconsDir)) continue;
-    for (const f of readdirSync(iconsDir)) {
-      if (!f.endsWith('.svg')) continue;
+  // Preload icon SVGs from manifest
+  let manifestPath = safeResolve(__dirname, 'icons', 'manifest.json');
+  if (!manifestPath || !existsSync(manifestPath)) {
+    manifestPath = safeResolve(PROJECT_ROOT, 'public', 'icons', 'manifest.json');
+  }
+  if (manifestPath) {
+    const iconFiles: string[] = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+    for (const f of iconFiles) {
       const key = `icons/${f.toLowerCase()}`;
-      const iconPath = safeResolve(iconsDir, f);
+      let iconPath = safeResolve(__dirname, 'icons', f);
+      if (!iconPath || !existsSync(iconPath)) {
+        iconPath = safeResolve(PROJECT_ROOT, 'public', 'icons', f);
+      }
       if (!iconPath) continue;
       files[key] = { content: readFileSync(iconPath), type: 'image/svg+xml' };
     }
