@@ -21,17 +21,24 @@ if [ -n "$(git ls-remote --tags origin "refs/tags/${tag_name}")" ]; then
     
     if [[ "$choice" =~ ^[Yy]$ ]]; then
         echo "bumping patch version..."
-        # automatically update patch version in package.json (e.g., 1.0.0 -> 1.0.1)
-        npm version patch --no-git-tag-version
-        
-        # re-read the updated version
-        version=$(node -p "require('./package.json').version")
+        # manually bump 4-part version (a.b.c.d → a.b.c.d+1)
+        version=$(node -p "
+          const v = require('./package.json').version.split('.');
+          v[v.length - 1] = String(Number(v[v.length - 1]) + 1);
+          v.join('.')
+        ")
+        node -e "
+          const pkg = require('./package.json');
+          pkg.version = '${version}';
+          require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+        "
+
         tag_name="v${version}"
         
-        # commit version changes and push to remote
+        # commit version changes and push to remote (with tags)
         git add package.json
         git commit -m "chore: bump version to ${version}"
-        git push origin HEAD
+        git push --follow-tags origin HEAD
     else
         echo "release cancelled."
         exit 0
@@ -48,8 +55,9 @@ if git rev-parse "${tag_name}" >/dev/null 2>&1; then
 fi
 git tag -a "${tag_name}" -m "release version ${version}"
 
-# 4. push the new tag to remote repository
-git push origin "${tag_name}"
+# 4. push commits + tag to remote
+git push --follow-tags origin HEAD
+git push origin "${tag_name}" 2>/dev/null || true  # ensure tag is pushed even if branch is up-to-date
 
 # 5. invoke the build script to generate artifacts
 echo "starting build process..."
