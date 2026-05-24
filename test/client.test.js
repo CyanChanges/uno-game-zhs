@@ -507,9 +507,17 @@ describe('UNO Client', () => {
 
     await pageA.waitForTimeout(300)
 
-    // Verify A's storage reflects left state
+    // After leaving the lobby, two states are possible depending on how
+    // quickly the auto-reconnect onopen handler runs after the server
+    // closes the ws:
+    //   - the leave flag is still set ('true') because reconnect hasn't
+    //     happened yet
+    //   - the flag has been consumed (null) because onopen ran and cleared
+    //     it, having already taken the "left lobby" branch
+    // What we care about is the invariant that the player has dropped its
+    // session — unoPlayerId must be cleared either way.
     const leftFlag = await pageA.evaluate(() => store.get('unoLeftLobby'))
-    expect(leftFlag).toBe('true')
+    expect(leftFlag === 'true' || leftFlag === null).toBe(true)
     const noId = await pageA.evaluate(() => store.get('unoPlayerId'))
     expect(noId).toBeNull()
 
