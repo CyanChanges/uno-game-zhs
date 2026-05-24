@@ -530,18 +530,33 @@ function handlePlayMultiple(lobbyId: string, playerId: string, cards: Card[]): v
     return;
   }
 
-  cards.forEach(card => {
+  // Verify every card is actually in the hand before mutating game state.
+  // Otherwise a client could submit forged cards and pollute the discard pile
+  // / inflict penalties on opponents while keeping its own hand intact.
+  // Build a working copy of the hand so duplicate cards in `cards` consume
+  // distinct hand slots (we can't reuse the same hand index twice).
+  const handCopy = player.hand!.slice();
+  const indicesToRemove: number[] = [];
+  for (const card of cards) {
     let cardIndex: number;
     if (card.type === 'wild' || card.type === 'wild4') {
-      cardIndex = player.hand!.findIndex(c => c.type === card.type);
+      cardIndex = handCopy.findIndex(c => c && c.type === card.type);
     } else {
-      cardIndex = player.hand!.findIndex(c => c.color === card.color && c.type === card.type);
+      cardIndex = handCopy.findIndex(c => c && c.color === card.color && c.type === card.type);
     }
+    if (cardIndex < 0) {
+      return;
+    }
+    indicesToRemove.push(cardIndex);
+    // Mark slot as consumed so the next iteration can't reuse it.
+    (handCopy as (Card | null)[])[cardIndex] = null;
+  }
 
-    if (cardIndex >= 0) {
-      player.hand!.splice(cardIndex, 1);
-    }
-  });
+  // All cards confirmed in hand — apply the removals to the real hand.
+  // Sort descending so splice() doesn't shift remaining indices.
+  for (const i of indicesToRemove.slice().sort((a, b) => b - a)) {
+    player.hand!.splice(i, 1);
+  }
 
   const lastCard = cards[cards.length - 1];
   lobby.game.discardPile.push(lastCard);
@@ -615,9 +630,15 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
       cardIndex = player!.hand!.findIndex(c => c.color === card.color && c.type === card.type);
     }
 
-    if (cardIndex >= 0) {
-      player!.hand!.splice(cardIndex, 1);
+    // Reject plays of cards that are not actually in the player's hand:
+    // without this check, a malicious client could push arbitrary cards onto
+    // the discard pile (e.g. a forged wild4) and trigger penalties on opponents
+    // without ever consuming their own hand.
+    if (cardIndex < 0) {
+      return;
     }
+
+    player!.hand!.splice(cardIndex, 1);
 
     lobby.game.discardPile.push(card);
 
