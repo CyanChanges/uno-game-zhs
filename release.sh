@@ -2,6 +2,13 @@
 
 set -euo pipefail
 
+# 0. auto-commit uncommitted package.json changes
+if ! git diff --quiet package.json; then
+    echo "detected uncommitted changes in package.json, auto-committing..."
+    git add package.json
+    git commit -m "chore: update package.json" || true
+fi
+
 # 1. read local version from package.json
 version=$(node -p "require('./package.json').version")
 tag_name="v${version}"
