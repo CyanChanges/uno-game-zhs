@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { Server, IncomingMessage, ServerResponse } from 'http';
 import { readFileSync, existsSync } from 'fs';
-import { randomUUID } from 'crypto';
+import { randomBytes } from 'crypto';
 import path from 'path';
 import { decideMove } from './aiplayer';
 import { ERR, errorResponse, ErrorCode } from './errors';
@@ -890,10 +890,22 @@ function handleUno(lobbyId: string, playerId: string): void {
 }
 
 function uuidv4(): string {
-  // Use Node's CSPRNG-backed UUID. The previous Math.random() implementation
-  // produced predictable IDs, and since reconnect is authenticated solely by
-  // playerId, predictable IDs would weaken account/session takeover defense.
-  return randomUUID();
+  // crypto.randomBytes is CSPRNG-backed and available since Node 0.10, so
+  // this works under Node 12 (the minimum target for the pkg-built binary)
+  // while still avoiding Math.random's predictable output. Node's own
+  // crypto.randomUUID would be cleaner but only landed in 14.17.
+  const bytes = randomBytes(16);
+  // Per RFC 4122 §4.4: set version (4) and variant (10).
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return (
+    hex.slice(0, 8) + '-' +
+    hex.slice(8, 12) + '-' +
+    hex.slice(12, 16) + '-' +
+    hex.slice(16, 20) + '-' +
+    hex.slice(20, 32)
+  );
 }
 
 wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
