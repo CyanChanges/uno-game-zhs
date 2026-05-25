@@ -28,3 +28,16 @@ export const WS_MAX_PAYLOAD = 64 * 1024
 
 // Per-connection malformed-message limit before the socket is closed.
 export const MAX_PARSE_ERRORS_PER_CONN = 20
+
+// Per-turn play timeout (milliseconds). If a player does not act within this
+// window, the server auto-draws a card on their behalf and advances the turn.
+// Browsers heavily throttle setTimeout/setInterval in background tabs, so the
+// authoritative timer must live on the server (Node) — clients only display
+// the countdown using Date.now() diffs against an absolute deadline.
+export const PLAY_TIMEOUT_MS = 30000;
+
+// Grace period added to the server-side timeout before kicking in. The client
+// also gets a small grace, so a slow message-rtt does not cause a kick at the
+// same instant the user clicked. Total user-visible window = PLAY_TIMEOUT_MS;
+// server uses PLAY_TIMEOUT_MS + grace to account for clock skew / rtt.
+export const PLAY_TIMEOUT_GRACE_MS = 1500;

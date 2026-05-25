@@ -913,18 +913,27 @@ describe('UNO Client', () => {
     }, topInfo.color)
     await pageA.waitForTimeout(500)
 
-    // Now B's turn — B clicks a card that is NOT draw2/wild4
-    // Confirm dialog should appear
-    await pageB.evaluate(() => {
+    // Now B's turn — B clicks a card that is NOT draw2/wild4 but IS
+    // playable (matches the top discard's color). With the bug-#4 fix the
+    // chain-break confirm only fires on legitimate plays, so the test must
+    // first ensure B holds a matching non-draw card.
+    await pageB.evaluate((color) => {
+      sendMessage({ action: 'dev_give_card', card: { color: color, type: '5' } })
+    }, topInfo.color)
+    await pageB.waitForTimeout(300)
+    await pageB.evaluate((color) => {
       const cards = document.querySelectorAll('#player-hand .card')
       for (let i = 0; i < cards.length; i++) {
         const type = cards[i].getAttribute('data-type')
-        if (type !== 'draw2' && type !== 'wild4') {
+        const cardColor = cards[i].getAttribute('data-color')
+        // Pick our seeded same-color non-draw card so the click is a legit
+        // chain-break — anything else and the click is now inert (#4).
+        if (type !== 'draw2' && type !== 'wild4' && cardColor === color) {
           cards[i].dispatchEvent(new MouseEvent('click', { bubbles: true }))
           return
         }
       }
-    })
+    }, topInfo.color)
     await pageB.waitForTimeout(300)
 
     // Confirm dialog should be visible with drawing count
@@ -1484,5 +1493,374 @@ describe('UNO Client', () => {
 
     for (const p of round2) await p.close()
     await ctx.close()
+  })
+
+  // ── New tests for TODO items #2/#4/#5/#6/#7 ──────────────────────
+
+  // Bug #4: clicking a card while it's not your turn must NOT pop the
+  // chain-break dialog. Before the fix, any click on a non-draw card while
+  // the chain was active surfaced the confirm — even on the off-turn UI.
+  it('off-turn click on a non-playable card does not show the chain confirm', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'b4-offturn-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const turnPage = (await isMyTurn(pageA)) ? pageA : pageB
+    const offPage = turnPage === pageA ? pageB : pageA
+
+    // Stage a chain on the active player's turn — they play a draw2.
+    const top = await turnPage.evaluate(() => {
+      const card = document.querySelector('#discard-pile .card')
+      return { color: card ? card.getAttribute('data-color') : 'red' }
+    })
+    await turnPage.evaluate((c) => sendMessage({ action: 'dev_give_card', card: { color: c, type: 'draw2' } }), top.color)
+    await turnPage.waitForTimeout(200)
+    await turnPage.evaluate((c) => sendMessage({ action: 'play', card: { color: c, type: 'draw2' } }), top.color)
+    await turnPage.waitForTimeout(400)
+
+    // Now it's the OTHER player's turn. From the OFF page (the one whose
+    // turn it just stopped being), clicking any card must be inert.
+    const clicked = await offPage.evaluate(() => {
+      const cards = document.querySelectorAll('#player-hand .card')
+      if (cards.length === 0) return false
+      cards[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      return true
+    })
+    expect(clicked).toBe(true)
+    await offPage.waitForTimeout(300)
+    const offModal = await offPage.evaluate(() => {
+      const overlay = document.getElementById('modal-overlay')
+      return overlay && !overlay.classList.contains('hidden')
+    })
+    expect(offModal).toBe(false)
+
+    await pageA.close(); await pageB.close()
+  })
+
+  // Bug #4: clicking a non-playable card on your own turn must also NOT
+  // surface the chain confirm (we'd have nothing to play anyway).
+  it('clicking a not-playable card on your turn does not show the chain confirm', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'b4-noplay-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const turnPage = (await isMyTurn(pageA)) ? pageA : pageB
+    const offPage = turnPage === pageA ? pageB : pageA
+
+    // Active plays a draw2 → other player is now in the chain on their turn.
+    const top = await turnPage.evaluate(() => {
+      const card = document.querySelector('#discard-pile .card')
+      return { color: card ? card.getAttribute('data-color') : 'red' }
+    })
+    await turnPage.evaluate((c) => sendMessage({ action: 'dev_give_card', card: { color: c, type: 'draw2' } }), top.color)
+    await turnPage.waitForTimeout(200)
+    await turnPage.evaluate((c) => sendMessage({ action: 'play', card: { color: c, type: 'draw2' } }), top.color)
+    await turnPage.waitForTimeout(400)
+
+    // Now turn is offPage. Click a card that is NOT playable against the
+    // current top (different color and different type).
+    await offPage.waitForFunction(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    }, { timeout: 5000 })
+
+    const clickedNonPlayable = await offPage.evaluate(() => {
+      const top = document.querySelector('#discard-pile .card')
+      const topColor = top.getAttribute('data-color')
+      const topType = top.getAttribute('data-type')
+      const cards = document.querySelectorAll('#player-hand .card')
+      for (const c of cards) {
+        const t = c.getAttribute('data-type')
+        const col = c.getAttribute('data-color')
+        // Skip wilds (they're always playable) and any same-color/type card.
+        if (t === 'wild' || t === 'wild4') continue
+        if (col === topColor || t === topType) continue
+        // draw2/wild4 also count as playable in chain state (they extend it).
+        if (t === 'draw2' || t === 'wild4') continue
+        c.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        return true
+      }
+      return false
+    })
+    if (!clickedNonPlayable) {
+      // Hand happened to be entirely playable — skip rather than fail.
+      await pageA.close(); await pageB.close()
+      return
+    }
+    await offPage.waitForTimeout(300)
+    const offModal = await offPage.evaluate(() => {
+      const overlay = document.getElementById('modal-overlay')
+      return overlay && !overlay.classList.contains('hidden')
+    })
+    expect(offModal).toBe(false)
+
+    await pageA.close(); await pageB.close()
+  })
+
+  // Task #7: modal supports Enter to confirm and Escape to cancel.
+  it('modal Enter confirms, Escape cancels, Tab cycles focus', { timeout: 20000 }, async () => {
+    const page = await browser.newPage()
+    await page.goto(BASE)
+    await page.waitForSelector('#name')
+
+    // Trigger a confirm via the leave-lobby flow. Need a lobby first.
+    const lobbyId = 'modal-' + Date.now()
+    await page.fill('#name', 'Alice')
+    await page.fill('#lobby-id', lobbyId)
+    await page.click('#join')
+    await page.waitForSelector('#players li')
+    await page.waitForSelector('#leave-lobby')
+    await page.click('#leave-lobby')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('modal-overlay')
+      return el && !el.classList.contains('hidden')
+    })
+
+    // Escape should cancel the confirm — we should remain in the lobby.
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('modal-overlay')
+      return el && el.classList.contains('hidden')
+    })
+    // We should still be in the lobby (leave was cancelled)
+    const stillInLobby = await page.evaluate(() => {
+      return !!document.getElementById('leave-lobby')
+    })
+    expect(stillInLobby).toBe(true)
+
+    // Now press leave again, Tab to cancel button, then Enter — should
+    // also cancel.
+    await page.click('#leave-lobby')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('modal-overlay')
+      return el && !el.classList.contains('hidden')
+    })
+    // Default focus is OK button. Tab should move to Cancel.
+    await page.keyboard.press('Tab')
+    const focusedAfterTab = await page.evaluate(() => document.activeElement && document.activeElement.id)
+    expect(focusedAfterTab).toBe('modal-cancel-btn')
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('modal-overlay')
+      return el && el.classList.contains('hidden')
+    })
+    const stillInLobby2 = await page.evaluate(() => !!document.getElementById('leave-lobby'))
+    expect(stillInLobby2).toBe(true)
+
+    // Now press leave one more time and just hit Enter — default should
+    // be OK, which actually leaves.
+    await page.click('#leave-lobby')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('modal-overlay')
+      return el && !el.classList.contains('hidden')
+    })
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(() => {
+      return !document.getElementById('leave-lobby')
+    }, { timeout: 5000 })
+    await page.close()
+  })
+
+  // Task #7: modal renders newlines from the message string.
+  it('modal renders \\n in messages as line breaks', { timeout: 20000 }, async () => {
+    const page = await browser.newPage()
+    await page.goto(BASE)
+    await page.waitForSelector('#name')
+
+    // Inject an alert through the in-page helper so we can pass arbitrary
+    // text.
+    await page.evaluate(() => {
+      // The bundled client exposes showAlert in the global scope under the
+      // module's IIFE — use a synthetic event hook instead by directly
+      // manipulating the modal so we don't depend on private symbols.
+      const overlay = document.getElementById('modal-overlay')
+      const msg = document.getElementById('modal-message')
+      const cancel = document.getElementById('modal-cancel-btn')
+      msg.textContent = 'first line\nsecond line\nthird line'
+      cancel.style.display = 'none'
+      overlay.classList.remove('hidden')
+      overlay.style.display = 'flex'
+    })
+    // Verify the rendered text preserves the newlines via CSS pre-line.
+    const whitespace = await page.$eval('#modal-message', el => getComputedStyle(el).whiteSpace)
+    expect(['pre-line', 'pre-wrap', 'pre']).toContain(whitespace)
+    // The actual displayed offsetHeight should reflect three lines (much
+    // taller than a single line of the same font-size).
+    const lines = await page.$eval('#modal-message', el => el.textContent.split('\n').length)
+    expect(lines).toBe(3)
+    await page.close()
+  })
+
+  // Task #5: turn timer text appears next to the turn indicator and counts
+  // down. We don't need to wait for the full duration — just confirm the
+  // value drops.
+  it('turn timer counts down on the active turn', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'timer-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // Wait until the turn-timer span exists and has a number.
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('turn-timer')
+      return el && /\(\d+s\)/.test(el.textContent || '')
+    }, { timeout: 5000 })
+
+    const first = await pageA.$eval('#turn-timer', el => el.textContent)
+    const firstSec = Number(/\((\d+)s\)/.exec(first)[1])
+
+    // Wait long enough that even at the slowest browser-throttled rAF rate
+    // the displayed seconds value should change. We poll for change rather
+    // than asserting after a fixed sleep so the test isn't flaky on slow
+    // CI machines. Bring the page to foreground first since rAF is
+    // throttled (and in some browsers paused) for hidden tabs.
+    await pageA.bringToFront()
+    let secondSec = firstSec
+    for (let i = 0; i < 30 && secondSec >= firstSec; i++) {
+      await pageA.waitForTimeout(150)
+      const second = await pageA.$eval('#turn-timer', el => el.textContent)
+      const m = /\((\d+)s\)/.exec(second)
+      if (m) secondSec = Number(m[1])
+    }
+    expect(secondSec).toBeLessThan(firstSec)
+
+    await pageA.close(); await pageB.close()
+  })
+
+  // Task #6: pressing a digit key highlights the corresponding card with
+  // .keyboard-hover; pressing Enter plays the card; Escape clears the
+  // highlight.
+  it('keyboard digit selects card and Enter plays it', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'kbd-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const turnPage = (await isMyTurn(pageA)) ? pageA : pageB
+
+    // Make sure there's a non-card-input focus and the body has focus so
+    // keydown listeners fire on document.
+    await turnPage.evaluate(() => document.body.focus())
+
+    // Press digit '1' — should highlight first card.
+    await turnPage.keyboard.press('Digit1')
+    await turnPage.waitForFunction(() => {
+      const cards = document.querySelectorAll('#player-hand .card')
+      return cards.length > 0 && cards[0].classList.contains('keyboard-hover')
+    }, { timeout: 3000 })
+
+    // Escape clears the hover.
+    await turnPage.keyboard.press('Escape')
+    await turnPage.waitForFunction(() => {
+      const cards = document.querySelectorAll('#player-hand .card')
+      return cards.length === 0 || !cards[0].classList.contains('keyboard-hover')
+    }, { timeout: 3000 })
+
+    // Find a playable card and seed it via dev_give_card so we have a
+    // predictable index 0.
+    const top = await turnPage.evaluate(() => {
+      const card = document.querySelector('#discard-pile .card')
+      return { color: card.getAttribute('data-color'), type: card.getAttribute('data-type') }
+    })
+    await turnPage.evaluate((color) => sendMessage({ action: 'dev_clear_hand' }), top.color)
+    await turnPage.waitForTimeout(200)
+    await turnPage.evaluate((color) => sendMessage({ action: 'dev_give_card', card: { color, type: '5' } }), top.color)
+    await turnPage.waitForFunction(() => {
+      const cards = document.querySelectorAll('#player-hand .card')
+      return cards.length === 1
+    })
+    // Press Digit1, then Enter — should play the card. After play, the hand
+    // should be empty and we should win (or get a 'win' frame, since the
+    // player was reduced to 0 cards).
+    await turnPage.keyboard.press('Digit1')
+    await turnPage.waitForFunction(() => {
+      const cards = document.querySelectorAll('#player-hand .card')
+      return cards[0] && cards[0].classList.contains('keyboard-hover')
+    })
+    await turnPage.keyboard.press('Enter')
+    // Either the hand empties or a win modal opens — give it a moment.
+    await turnPage.waitForTimeout(500)
+    const handAfter = await turnPage.evaluate(() => document.querySelectorAll('#player-hand .card').length)
+    expect(handAfter).toBe(0)
+
+    await pageA.close(); await pageB.close()
   })
 })

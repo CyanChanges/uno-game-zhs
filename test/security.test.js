@@ -325,4 +325,133 @@ describe('Security', () => {
     c.close()
     a.close(); b.close()
   })
+
+  // ── Additional hardening (task #9) ──────────
+
+  // Reaction text content is duration-scaled per character; an attacker
+  // could try to slip a non-numeric value or NaN through to derail the
+  // formatting on receivers. The server must reject anything that isn't a
+  // bounded string.
+  it('rejects non-string reaction content', async () => {
+    const a = await trackedWs(); const b = await trackedWs()
+    await a.next(); await b.next()
+    a.ws.send(JSON.stringify({ action: 'join', name: 'Ra', lobbyId: 'reactstr' }))
+    await new Promise(r => setTimeout(r, 100))
+    b.ws.send(JSON.stringify({ action: 'join', name: 'Rb', lobbyId: 'reactstr' }))
+    await new Promise(r => setTimeout(r, 100))
+    a.ws.send(JSON.stringify({ action: 'ready' }))
+    b.ws.send(JSON.stringify({ action: 'ready' }))
+    let started = false
+    for (let i = 0; i < 30 && !started; i++) {
+      try { const m = a.next(150); if ((await m).action === 'start') started = true } catch {}
+    }
+    expect(started).toBe(true)
+
+    // Several payloads that all must NOT be re-broadcast to peers.
+    const evil = [
+      { action: 'reaction', type: 'text', content: 12345 },
+      { action: 'reaction', type: 'text', content: null },
+      { action: 'reaction', type: 'text', content: ['a', 'b'] },
+      { action: 'reaction', type: 'emoji', content: 12345 },
+    ]
+    for (const m of evil) a.ws.send(JSON.stringify(m))
+    await new Promise(r => setTimeout(r, 300))
+    let gotReaction = false
+    for (let i = 0; i < 5; i++) {
+      try { const m = await b.next(80); if (m.action === 'reaction') gotReaction = true } catch { break }
+    }
+    expect(gotReaction).toBe(false)
+    a.close(); b.close()
+  })
+
+  // The server uses prototype-less object stores so __proto__ payloads
+  // shouldn't be able to mutate Object.prototype. Verify by sending a
+  // synthetic JSON-injection probe and observing that subsequent benign
+  // requests behave normally.
+  it('does not pollute Object.prototype via crafted JSON', async () => {
+    const c = await trackedWs()
+    await c.next()
+    // The standard JSON.parse already doesn't pollute, but verify the
+    // round trip still succeeds and that a subsequent call works.
+    c.ws.send(JSON.stringify({ action: 'join', name: '__proto__', lobbyId: 'pp', __proto__: { polluted: true } }))
+    await new Promise(r => setTimeout(r, 200))
+    // The connection should still be alive — the server treats the payload
+    // as a normal join (with the literal name '__proto__' which passes the
+    // length check of 9 chars).
+    expect(c.ws.readyState).toBe(1)
+    c.close()
+  })
+
+  // Sustained malformed payloads must eventually close the connection
+  // (MAX_PARSE_ERRORS_PER_CONN), preventing a connection-pinning DoS.
+  it('closes connections after sustained invalid messages', async () => {
+    const c = await trackedWs()
+    await c.next()
+    // Spam ~30 garbage payloads (above the 20-error cap).
+    for (let i = 0; i < 30; i++) c.ws.send('}{')
+    // Wait long enough for the server to dispatch the close frame.
+    await new Promise(r => setTimeout(r, 500))
+    expect([0, 2, 3]).toContain(c.ws.readyState) // CONNECTING, CLOSING or CLOSED
+  })
+
+  // Dev events must be rejected outright when the server is not in dev mode.
+  // This server is started with NODE_ENV=development so dev events do work,
+  // but we can still verify they don't crash on bogus payloads.
+  it('dev events reject malformed card payloads', async () => {
+    const a = await trackedWs(); const b = await trackedWs()
+    await a.next(); await b.next()
+    a.ws.send(JSON.stringify({ action: 'join', name: 'da', lobbyId: 'devmal' }))
+    await new Promise(r => setTimeout(r, 100))
+    b.ws.send(JSON.stringify({ action: 'join', name: 'db', lobbyId: 'devmal' }))
+    await new Promise(r => setTimeout(r, 100))
+    a.ws.send(JSON.stringify({ action: 'ready' }))
+    b.ws.send(JSON.stringify({ action: 'ready' }))
+    let started = false
+    for (let i = 0; i < 30 && !started; i++) {
+      try { const m = await a.next(150); if (m.action === 'start') started = true } catch {}
+    }
+    expect(started).toBe(true)
+
+    // Several malformed dev_give_card payloads — none should crash.
+    const malformed = [
+      { action: 'dev_give_card' },
+      { action: 'dev_give_card', card: null },
+      { action: 'dev_give_card', card: { /* missing type */ color: 'red' } },
+      { action: 'dev_give_card', card: { type: 12345 } },
+      { action: 'dev_set_top', card: undefined },
+    ]
+    for (const m of malformed) a.ws.send(JSON.stringify(m))
+    await new Promise(r => setTimeout(r, 300))
+    expect(a.ws.readyState).toBe(1)
+    a.close(); b.close()
+  })
+
+  // /constants exposes the play timeout — make sure no extra fields leak
+  // (e.g. WS_MAX_PAYLOAD which is internal).
+  it('/constants exposes only the documented fields', async () => {
+    const resp = await fetch(`${BASE}/constants`)
+    expect(resp.status).toBe(200)
+    const json = await resp.json()
+    // Allow these keys; reject anything else so future additions force a
+    // conscious test update.
+    const ALLOWED = [
+      'NAME_LENGTH_MIN', 'NAME_LENGTH_MAX', 'MAX_HAND_CARDS',
+      'RECONNECT_DEFER_MS', 'RECONNECT_DEADLINE_MS', 'DISCONNECT_REMOVE_MS',
+      'PLAY_TIMEOUT_MS',
+    ]
+    const extras = Object.keys(json).filter(k => !ALLOWED.includes(k))
+    expect(extras).toEqual([])
+    expect(typeof json.PLAY_TIMEOUT_MS).toBe('number')
+    expect(json.PLAY_TIMEOUT_MS).toBeGreaterThan(0)
+  })
+
+  // The HTTP layer should set defense-in-depth security headers on the
+  // index response.
+  it('sets security headers on the index response', async () => {
+    const resp = await fetch(`${BASE}/`)
+    expect(resp.status).toBe(200)
+    expect(resp.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(resp.headers.get('x-frame-options')).toBe('DENY')
+    expect(resp.headers.get('content-security-policy')).toContain("default-src 'self'")
+  })
 })

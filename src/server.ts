@@ -11,6 +11,7 @@ import {
   LOBBY_ID_LENGTH_MIN, LOBBY_ID_LENGTH_MAX,
   MAX_AI_PER_LOBBY, REACTION_CONTENT_MAX,
   WS_MAX_PAYLOAD, MAX_PARSE_ERRORS_PER_CONN,
+  PLAY_TIMEOUT_MS, PLAY_TIMEOUT_GRACE_MS,
 } from './constants';
 
 interface Card {
@@ -214,6 +215,7 @@ const httpServer = new Server((req: IncomingMessage, res: ServerResponse) => {
     return res.end(JSON.stringify({
       NAME_LENGTH_MIN, NAME_LENGTH_MAX, MAX_HAND_CARDS,
       RECONNECT_DEFER_MS, RECONNECT_DEADLINE_MS, DISCONNECT_REMOVE_MS,
+      PLAY_TIMEOUT_MS,
     }));
   }
 
@@ -274,6 +276,23 @@ const disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const sessions = new Map<string, SessionData>();
 const deferTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+// Per-lobby turn-timeout state. The authoritative timer lives on the server
+// (Node.js timers are not throttled) — clients only display the countdown
+// using Date.now() diffs against the broadcast deadline. The deadline is the
+// absolute epoch ms by which the player must have acted (drawn or played).
+// Auto-draw mode is paused while no real-player has any time to act, e.g.
+// during AI turns or while the only human is reconnecting.
+interface TurnTimer {
+  timer: ReturnType<typeof setTimeout>;
+  deadline: number;
+  // Token bumped on every reschedule; pending fires whose token mismatches
+  // the current one are no-ops, preventing stale timers from firing after a
+  // legitimate turn change beat them to it.
+  token: number;
+}
+const turnTimers = new Map<string, TurnTimer>();
+const turnTokens = new Map<string, number>();
 
 // ── Logging ──────────────────────────────────────────────
 const LOG_PREFIX = '[server]';
@@ -352,7 +371,8 @@ function broadcastPlayers(lobbyId: string): void {
     players: lobby.players,
     turn: lobby.game.turn,
     lobbyId: lobbyId,
-    drawMode: lobby.game.drawMode
+    drawMode: lobby.game.drawMode,
+    turnDeadline: lobby.game.started ? getTurnDeadline(lobbyId) : null,
   };
   broadcastToLobby(lobbyId, message);
 }
@@ -468,6 +488,11 @@ function startGame(lobbyId: string): void {
   }
   lobby.game.discardPile.push(lobby.game.deck.splice(firstCardIndex, 1)[0]);
 
+  // Start the turn-timeout for the first player before broadcasting so the
+  // absolute deadline ships in the same start frame.
+  scheduleTurnTimeout(lobbyId);
+  const turnDeadline = getTurnDeadline(lobbyId);
+
   [...clients.keys()].forEach((client) => {
     const metadata = clients.get(client);
     if (metadata && metadata.lobbyId === lobbyId) {
@@ -482,7 +507,8 @@ function startGame(lobbyId: string): void {
             gameState: lobby.game.state,
             drawingCount: lobby.game.drawingCount,
         hand: player.hand,
-        id: metadata.id
+        id: metadata.id,
+        turnDeadline,
       };
       client.send(JSON.stringify(message));
     }
@@ -495,6 +521,7 @@ function broadcastWin(lobbyId: string, winnerName: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby) return;
 
+  clearTurnTimer(lobbyId);
   broadcastToLobby(lobbyId, { action: 'win', winner: winnerName });
 
   for (const [, meta] of clients) {
@@ -509,6 +536,7 @@ function broadcastGameAborted(lobbyId: string, excludePlayerId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby) return;
 
+  clearTurnTimer(lobbyId);
   broadcastToLobby(lobbyId, { action: 'game_aborted' }, excludePlayerId);
 
   for (const [client, meta] of clients) {
@@ -551,6 +579,79 @@ function clearAllAITimeouts(lobbyId: string): void {
       clearAITimeout(player.id);
     }
   }
+}
+
+function clearTurnTimer(lobbyId: string): void {
+  const t = turnTimers.get(lobbyId);
+  if (t) {
+    clearTimeout(t.timer);
+    turnTimers.delete(lobbyId);
+  }
+}
+
+// Schedule (or reset) the per-turn timeout for the lobby. AI turns are not
+// timed (they act on their own setTimeout), and rounds with only AI players
+// remaining never auto-fire. The current real player has PLAY_TIMEOUT_MS to
+// act; otherwise the server auto-draws on their behalf.
+function scheduleTurnTimeout(lobbyId: string): void {
+  const lobby = lobbies.get(lobbyId);
+  if (!lobby || !lobby.game.started) {
+    clearTurnTimer(lobbyId);
+    return;
+  }
+
+  const currentPlayer = lobby.players[lobby.game.turn];
+  // Skip timeout for AI turns (AI has its own scheduler) and for disconnected
+  // players (their reconnect/disconnect timers cover them; if those expire
+  // the player is removed and turn advances).
+  if (!currentPlayer || currentPlayer.isAI || currentPlayer.disconnected) {
+    clearTurnTimer(lobbyId);
+    return;
+  }
+
+  // Bump the token so any prior fire that survives the clearTimeout race is a
+  // no-op when it eventually runs.
+  const newToken = (turnTokens.get(lobbyId) || 0) + 1;
+  turnTokens.set(lobbyId, newToken);
+
+  clearTurnTimer(lobbyId);
+
+  const deadline = Date.now() + PLAY_TIMEOUT_MS + PLAY_TIMEOUT_GRACE_MS;
+  const timer = setTimeout(() => {
+    if (turnTokens.get(lobbyId) !== newToken) return;
+    turnTimers.delete(lobbyId);
+    onTurnTimeout(lobbyId, currentPlayer.id);
+  }, PLAY_TIMEOUT_MS + PLAY_TIMEOUT_GRACE_MS);
+  turnTimers.set(lobbyId, { timer, deadline, token: newToken });
+}
+
+function getTurnDeadline(lobbyId: string): number | null {
+  const t = turnTimers.get(lobbyId);
+  return t ? t.deadline : null;
+}
+
+function onTurnTimeout(lobbyId: string, expectedPlayerId: string): void {
+  const lobby = lobbies.get(lobbyId);
+  if (!lobby || !lobby.game.started) return;
+  const currentPlayer = lobby.players[lobby.game.turn];
+  // Whoever is currently up may differ from when the timer was scheduled
+  // (race against handlePlay/handleDraw). If so, just bail — the new turn
+  // already has its own timer.
+  if (!currentPlayer || currentPlayer.id !== expectedPlayerId) return;
+  if (currentPlayer.isAI || currentPlayer.disconnected) return;
+
+  serverLog(`turn timeout in ${lobbyId.slice(0, 8)} — auto-drawing for ${currentPlayer.name}`);
+  // Notify everyone in the lobby so the client can flash a status line.
+  // We send before auto-draw so the message lands in the same render frame
+  // as the resulting update.
+  broadcastToLobby(lobbyId, {
+    action: 'turn_timeout',
+    playerId: currentPlayer.id,
+    playerName: currentPlayer.name,
+  });
+  // Auto-draw treats the turn the same as a manual draw: in chain state the
+  // penalty is accepted; otherwise a single card is drawn. Turn advances.
+  handleDraw(lobbyId, currentPlayer.id);
 }
 
 function performAIMove(lobbyId: string): void {
@@ -638,10 +739,26 @@ function handlePlayMultiple(lobbyId: string, playerId: string, cards: Card[]): v
   const cardCount = cards.length;
 
   if (lastCard.type === 'skip') {
+    // In chain mode, breaking the chain with skip/reverse must still apply
+    // the accumulated penalty to the player who broke it. Without this the
+    // chain effect is silently dropped (TODO #3 — "普通牌在部分情况下会使
+    // 得链式加牌的加牌效果被跳过").
+    if (lobby.game.drawMode !== 'direct' && lobby.game.state === LobbyGameState.drawing) {
+      const penalty = lobby.game.drawingCount;
+      if (penalty > 0 && player) {
+        player.hand!.push(...drawCardsFromDeck(lobby, lobbyId, penalty));
+      }
+    }
     lobby.game.turn = (lobby.game.turn + (cardCount + 1) * lobby.game.direction + lobby.players.length) % lobby.players.length;
     lobby.game.state = LobbyGameState.normal;
     lobby.game.drawingCount = 0;
   } else if (lastCard.type === 'reverse') {
+    if (lobby.game.drawMode !== 'direct' && lobby.game.state === LobbyGameState.drawing) {
+      const penalty = lobby.game.drawingCount;
+      if (penalty > 0 && player) {
+        player.hand!.push(...drawCardsFromDeck(lobby, lobbyId, penalty));
+      }
+    }
     if (cardCount % 2 === 1) {
       lobby.game.direction *= -1;
     }
@@ -717,10 +834,25 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
     lobby.game.discardPile.push(card);
 
     if (card.type === 'skip') {
+      // Chain-breaking via skip/reverse must still apply the penalty in
+      // chain mode (TODO #3). Without this, the player breaks the chain
+      // for free.
+      if (lobby.game.drawMode !== 'direct' && lobby.game.state === LobbyGameState.drawing) {
+        const penalty = lobby.game.drawingCount;
+        if (penalty > 0) {
+          player!.hand!.push(...drawCardsFromDeck(lobby, lobbyId, penalty));
+        }
+      }
       lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
       lobby.game.state = LobbyGameState.normal;
       lobby.game.drawingCount = 0;
     } else if (card.type === 'reverse') {
+      if (lobby.game.drawMode !== 'direct' && lobby.game.state === LobbyGameState.drawing) {
+        const penalty = lobby.game.drawingCount;
+        if (penalty > 0) {
+          player!.hand!.push(...drawCardsFromDeck(lobby, lobbyId, penalty));
+        }
+      }
       lobby.game.direction *= -1;
       lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
       lobby.game.state = LobbyGameState.normal;
@@ -855,6 +987,12 @@ function broadcastGameUpdate(lobbyId: string): void {
     }
   });
 
+  // Reset the turn timer for the new active player. Done before broadcasting
+  // so the absolute deadline goes out in the same message and clients can
+  // begin their countdown immediately.
+  scheduleTurnTimeout(lobbyId);
+  const turnDeadline = getTurnDeadline(lobbyId);
+
   [...clients.keys()].forEach((client) => {
     const metadata = clients.get(client);
     if (metadata && metadata.lobbyId === lobbyId) {
@@ -868,7 +1006,8 @@ function broadcastGameUpdate(lobbyId: string): void {
         gameState: lobby.game.state,
         drawingCount: lobby.game.drawingCount,
         spectator: metadata.isSpectator || false,
-        hand: player ? player.hand : []
+        hand: player ? player.hand : [],
+        turnDeadline,
       };
 
       client.send(JSON.stringify(message));
@@ -1249,7 +1388,8 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
                 direction: rLobby!.game.direction,
                 gameState: rLobby!.game.state,
                 drawingCount: rLobby!.game.drawingCount,
-                hand: player.hand
+                hand: player.hand,
+                turnDeadline: getTurnDeadline(session.lobbyId),
               }));
             }
           } else {
@@ -1329,6 +1469,7 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             sLobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false, state: LobbyGameState.normal, drawingCount: 0, drawMode: 'chain' };
             startedLobbies.delete(lobbyId);
             clearAllAITimeouts(lobbyId);
+            clearTurnTimer(lobbyId);
             return;
           }
           // Single opponent → standard surrender, opponent wins
@@ -1526,6 +1667,44 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           broadcastGameUpdate(metadata.lobbyId!);
           return;
         }
+        case 'dev_set_top': {
+          // Stage the discard pile with a specific top card so tests/dev can
+          // exercise edge cases (e.g. broken-chain tests). The card is pushed
+          // on top; the server treats the latest discard as authoritative for
+          // matching, so this is sufficient. No turn change.
+          const lobby = findOrCreateLobby(metadata.lobbyId!);
+          if (!lobby.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
+          if (!message.card || typeof message.card.type !== 'string') return;
+          lobby.game.discardPile.push({ ...message.card });
+          broadcastGameUpdate(metadata.lobbyId!);
+          return;
+        }
+        case 'dev_set_chain': {
+          // Force the lobby into chain-drawing state with a given pending
+          // penalty. Lets tests assert what happens when a player breaks an
+          // existing chain.
+          const lobby = findOrCreateLobby(metadata.lobbyId!);
+          if (!lobby.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
+          const count = Math.max(0, Math.min(message.count || 0, 1000));
+          if (count > 0) {
+            lobby.game.state = LobbyGameState.drawing;
+            lobby.game.drawingCount = count;
+          } else {
+            lobby.game.state = LobbyGameState.normal;
+            lobby.game.drawingCount = 0;
+          }
+          broadcastGameUpdate(metadata.lobbyId!);
+          return;
+        }
+        case 'dev_clear_hand': {
+          const lobby = findOrCreateLobby(metadata.lobbyId!);
+          if (!lobby.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
+          const player = lobby.players.find(p => p.id === metadata.id);
+          if (!player) { ws.send(JSON.stringify(errorResponse('PLAYER_NOT_FOUND'))); return; }
+          player.hand = [];
+          broadcastGameUpdate(metadata.lobbyId!);
+          return;
+        }
         case 'dev_export_state': {
           logState('export', metadata);
           ws.send(JSON.stringify({ action: 'dev_state_export', log: stateLog }));
@@ -1653,17 +1832,25 @@ function handleLeave(lobbyId: string, playerId: string): void {
 
     checkGameAborted(lobbyId, playerId);
 
+    // After a player leaves, the active turn may have moved to a new
+    // player — re-schedule the turn timer so they get the full window.
+    if (lobby.game.started) {
+      scheduleTurnTimeout(lobbyId);
+    }
+
     broadcastToLobby(lobbyId, {
       action: 'players',
       players: lobby.players,
       turn: lobby.game.turn,
-      lobbyId: lobbyId
+      lobbyId: lobbyId,
+      turnDeadline: lobby.game.started ? getTurnDeadline(lobbyId) : null,
     }, playerId);
 
     checkStartGame(lobbyId);
     serverLog(`player leaved from ${lobby.id} :`, player);
 
     if (lobby.players.length === 0) {
+      clearTurnTimer(lobbyId);
       lobbies.delete(lobbyId);
     }
   }

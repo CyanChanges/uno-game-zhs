@@ -742,12 +742,20 @@ body.spectator #turn-indicator::after {
     opacity: 1;
 }
 
-.card:hover {
+.card:hover, .card.keyboard-hover {
     transform: translateY(-8px) scale(1.05);
     box-shadow:
         0 8px 16px rgba(0, 0, 0, 0.15),
         0 16px 32px rgba(0, 0, 0, 0.15),
         inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+/* Keyboard hover gets a faint outline so it's clearly distinct from
+   "selected" (which is reserved for multi-card selection) and from a
+   purely cursor-driven hover. */
+.card.keyboard-hover {
+    outline: 2px solid rgba(102, 126, 234, 0.85);
+    outline-offset: 2px;
 }
 
 .card:active {
@@ -770,7 +778,7 @@ body.spectator #turn-indicator::after {
     opacity: 0.7;
 }
 
-.card.not-playable:hover {
+.card.not-playable:hover, .card.not-playable.keyboard-hover {
     transform: none;
     box-shadow:
         0 4px 8px rgba(0, 0, 0, 0.1),
@@ -1558,6 +1566,9 @@ body.player-action-disabled #player-hand>* {
     margin-bottom: 24px;
     text-align: center;
     word-break: break-word;
+    /* Preserve '\n' inserted via textContent so multi-line dialogs format
+       sensibly (e.g. "确定要打破链式加牌吗？\n你将抽 3 张牌"). */
+    white-space: pre-line;
 }
 
 #modal-actions {
@@ -1868,4 +1879,46 @@ footer a:hover {
 .user-select-children * {
     user-select: text !important;
     -webkit-user-select: text !important;
+}
+
+/* Per-turn countdown — appended to the turn-indicator label. The font and
+   color are deliberately subtle so the seconds-remaining doesn't dominate
+   the "YOU" / "<name>'s turn" message. */
+#turn-timer {
+    margin-left: 8px;
+    font-size: 0.85em;
+    font-weight: 500;
+    color: #a0aec0;
+    font-variant-numeric: tabular-nums;
+}
+
+#turn-indicator.my-turn #turn-timer {
+    /* On our own turn the countdown gets a slightly louder color so it's
+       clearly part of the call-to-action. */
+    color: #ffd166;
+}
+
+/* Auto-draw timeout toast (lives below the connection toast at the same
+   slot to avoid overlapping). The visible class slides it down from the
+   top edge; we hide it again 3.5s later (handled in client.ts). */
+#turn-timeout-toast {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translate(-50%, -120%);
+    z-index: 9999;
+    background: #f59e0b;
+    color: #1e1e1e;
+    padding: 10px 18px;
+    border-radius: 0 0 12px 12px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+    transition: transform 0.3s ease-out;
+    pointer-events: none;
+    max-width: 80vw;
+}
+
+#turn-timeout-toast.visible {
+    transform: translate(-50%, 0);
 }

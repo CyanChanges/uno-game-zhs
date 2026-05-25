@@ -64,9 +64,11 @@ interface ServerMessage {
   drawingCount?: number;
   drawMode?: string;
   playerId?: string;
+  playerName?: string;
   type?: string;
   content?: string;
   log?: object[];
+  turnDeadline?: number | null;
 }
 
 let NAME_LENGTH_MIN = 2;
@@ -254,9 +256,104 @@ let myLobbyId: string | null = null;
 let isSpectating = false;
 let gameState = 0;
 let drawingChain = 0;
+// Absolute epoch-ms deadline for the current turn — broadcast by the server
+// and used purely for client-side display. Browsers throttle setTimeout in
+// background tabs, so we never use a relative timer; the visible countdown
+// is computed from `Date.now()` against this deadline. `null` means "no
+// active timeout" (e.g. AI turn, lobby state, game over).
+let turnDeadline: number | null = null;
+// Constant fetched from /constants. Falls back to a reasonable default so
+// the UI degrades gracefully if the fetch hasn't completed yet.
+let PLAY_TIMEOUT_MS = 30000;
+// requestAnimationFrame handle for the turn countdown ticker. We use rAF
+// instead of setInterval because a once-per-second interval looks janky in
+// the foreground but more importantly because rAF is paused (rather than
+// throttled to 1 tick/min) when the tab backgrounds — that's actually fine
+// here since the server is the source of truth. When the tab returns to
+// the foreground, the next paint snaps the displayed value back to the
+// real Date.now() diff with no drift.
+let turnTimerRaf: number | null = null;
 
+// Hovered-via-keyboard card index. -1 = none. The visual treatment matches
+// the .hovered CSS class (added below) so the hover animation is identical
+// whether triggered by the mouse or by the keyboard. Enter plays the
+// hovered card; ESC / click-on-empty-area / a different digit replaces it;
+// playing the card or running into a hand-update naturally clears it.
+let keyboardHoverIndex = -1;
+function setKeyboardHover(idx: number): void {
+  keyboardHoverIndex = idx;
+  // Re-render the hand so .hovered is applied to the right card.
+  updateHand(myHand);
+}
+function clearKeyboardHover(): void {
+  if (keyboardHoverIndex === -1) return;
+  keyboardHoverIndex = -1;
+  updateHand(myHand);
+}
+// Map a keyboard digit (top-row or numpad) to a hand index using the
+// "1 → first card, 0 → tenth" convention. Returns -1 if the key isn't
+// a digit. Top-row digits use `e.code` (Digit1...) and numpad uses
+// (Numpad1...) — handle both so users with either layout work.
+function digitFromKeyEvent(e: KeyboardEvent): number {
+  // Ignore digit input while focus is in a text field — otherwise typing
+  // a chat message would highlight cards.
+  const tag = (document.activeElement && (document.activeElement as HTMLElement).tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || (document.activeElement as HTMLElement | null)?.isContentEditable) {
+    return -1;
+  }
+  let digit = -1;
+  if (/^Digit[0-9]$/.test(e.code)) digit = Number(e.code.slice(5));
+  else if (/^Numpad[0-9]$/.test(e.code)) digit = Number(e.code.slice(6));
+  if (digit < 0) return -1;
+  if (digit === 0) return 9;
+  return digit - 1;
+}
 function getLeaveSpectateBtn(): HTMLButtonElement | null {
   return document.getElementById('leave-spectate-btn') as HTMLButtonElement | null;
+}
+
+// ── Turn countdown helpers ─────────────────────────────
+// rAF-driven so backgrounded tabs don't stutter — the visible value is
+// always Date.now() vs. the server-supplied absolute deadline. The label
+// is appended to the existing turn-indicator H3 via a sibling span.
+function getTurnTimerEl(): HTMLSpanElement {
+  let el = document.getElementById('turn-timer') as HTMLSpanElement | null;
+  if (!el) {
+    el = document.createElement('span');
+    el.id = 'turn-timer';
+    // Render as a subtle suffix; CSS handles colors/weight.
+    turnText.parentElement!.appendChild(el);
+  }
+  return el;
+}
+function setTurnTimerText(text: string): void {
+  const el = getTurnTimerEl();
+  if (el.textContent !== text) el.textContent = text;
+}
+function tickTurnCountdown(): void {
+  if (turnDeadline === null) {
+    setTurnTimerText('');
+    turnTimerRaf = null;
+    return;
+  }
+  const remaining = Math.max(0, turnDeadline - Date.now());
+  // The visible window is PLAY_TIMEOUT_MS — the server adds a small grace
+  // beyond it. Cap the displayed value at the configured timeout so the
+  // user doesn't see a number larger than the documented limit.
+  const display = Math.min(remaining, PLAY_TIMEOUT_MS);
+  const seconds = Math.ceil(display / 1000);
+  setTurnTimerText(` (${seconds}s)`);
+  turnTimerRaf = window.requestAnimationFrame(tickTurnCountdown);
+}
+function startTurnCountdown(): void {
+  if (turnTimerRaf !== null) return;
+  turnTimerRaf = window.requestAnimationFrame(tickTurnCountdown);
+}
+function stopTurnCountdown(): void {
+  if (turnTimerRaf !== null) {
+    window.cancelAnimationFrame(turnTimerRaf);
+    turnTimerRaf = null;
+  }
 }
 
 // Add these elements to the existing DOM references
@@ -265,7 +362,12 @@ joinFormContainer.id = 'join-form-container';
 
 let isDisconnected = false;
 let disconnectToastTimeout: ReturnType<typeof setTimeout> | null = null;
-let countdownInterval: ReturnType<typeof setInterval> | null = null;
+// Reconnect-deadline countdown is rAF-driven (rather than setInterval) so
+// browser tabs don't desync the displayed value when backgrounded. The
+// authoritative deadline is the absolute epoch ms in
+// `Player.reconnectDeadline`; we just diff it against Date.now() each frame.
+let reconnectCountdownRaf: number | null = null;
+let reconnectCountdownLastSec: Map<string, number> = new Map();
 let actionQueue: object[] = [];
 let refreshErrorCount = 0;
 let refreshErrorTime = 0;
@@ -283,44 +385,108 @@ const modalMessage = document.getElementById('modal-message') as HTMLParagraphEl
 const modalOkBtn = document.getElementById('modal-ok-btn') as HTMLButtonElement;
 const modalCancelBtn = document.getElementById('modal-cancel-btn') as HTMLButtonElement;
 
+// CSS handles the multi-line whitespace; preserve newlines and tabs in
+// modal messages by setting the textContent directly. The CSS rule for
+// #modal-message uses `white-space: pre-line` so '\n' renders as a break.
+function setModalMessage(text: string): void {
+  modalMessage.textContent = text;
+}
+
+// Wires up keyboard navigation for the modal. The OK button is the default
+// (auto-focused, Enter submits); Tab and arrow keys cycle between OK and
+// Cancel; Escape resolves like Cancel (or OK when there is no Cancel).
+type ModalKeyHandler = (action: 'ok' | 'cancel') => void;
+function attachModalKeyboard(hasCancel: boolean, onAction: ModalKeyHandler): () => void {
+  const buttons: HTMLButtonElement[] = hasCancel ? [modalCancelBtn, modalOkBtn] : [modalOkBtn];
+  // Focus the primary action so Enter Just Works on first paint.
+  setTimeout(() => modalOkBtn.focus(), 0);
+
+  function focusNext(delta: number): void {
+    const active = document.activeElement as HTMLElement | null;
+    let idx = buttons.findIndex(b => b === active);
+    if (idx === -1) idx = buttons.length - 1; // default to primary
+    const next = buttons[(idx + delta + buttons.length) % buttons.length];
+    next.focus();
+  }
+
+  function onKey(e: KeyboardEvent): void {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onAction(hasCancel ? 'cancel' : 'ok');
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const target = document.activeElement;
+      if (target === modalCancelBtn) onAction('cancel');
+      else onAction('ok');
+      return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      focusNext(e.shiftKey ? -1 : 1);
+      return;
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      focusNext(-1);
+      return;
+    }
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      focusNext(1);
+    }
+  }
+  document.addEventListener('keydown', onKey, true);
+  return () => document.removeEventListener('keydown', onKey, true);
+}
+
 function showAlert(msg: string): Promise<void> {
   return new Promise(resolve => {
     modalCancelBtn.style.display = 'none';
-    modalMessage.textContent = msg;
+    setModalMessage(msg);
     modalOkBtn.textContent = '确定';
     modalOverlay.classList.remove('hidden');
     modalOverlay.style.display = 'flex';
 
+    let detachKeys: () => void = () => {};
     function cleanup() {
       modalOverlay.classList.add('hidden');
       modalOverlay.style.display = '';
       modalOkBtn.removeEventListener('click', onOk);
+      detachKeys();
       resolve();
     }
     function onOk() { cleanup(); }
     modalOkBtn.addEventListener('click', onOk);
+    detachKeys = attachModalKeyboard(false, () => onOk());
   });
 }
 
 function showConfirm(msg: string): Promise<boolean> {
   return new Promise(resolve => {
     modalCancelBtn.style.display = '';
-    modalMessage.textContent = msg;
+    setModalMessage(msg);
     modalOkBtn.textContent = '确定';
     modalOverlay.classList.remove('hidden');
     modalOverlay.style.display = 'flex';
 
+    let detachKeys: () => void = () => {};
     function cleanup(result: boolean) {
       modalOverlay.classList.add('hidden');
       modalOverlay.style.display = '';
       modalOkBtn.removeEventListener('click', onOk);
       modalCancelBtn.removeEventListener('click', onCancel);
+      detachKeys();
       resolve(result);
     }
     function onOk() { cleanup(true); }
     function onCancel() { cleanup(false); }
     modalOkBtn.addEventListener('click', onOk);
     modalCancelBtn.addEventListener('click', onCancel);
+    detachKeys = attachModalKeyboard(true, (action) => {
+      cleanup(action === 'ok');
+    });
   });
 }
 
@@ -349,6 +515,13 @@ function connect(): void {
     fetch('/constants').then(r => r.json()).then(c => {
       if (c.NAME_LENGTH_MIN) NAME_LENGTH_MIN = c.NAME_LENGTH_MIN;
       if (c.NAME_LENGTH_MAX) NAME_LENGTH_MAX = c.NAME_LENGTH_MAX;
+      if (c.PLAY_TIMEOUT_MS) {
+        PLAY_TIMEOUT_MS = c.PLAY_TIMEOUT_MS;
+        // Reflect the live constant in the rules dialog so server & UI stay
+        // in sync if the operator tweaks PLAY_TIMEOUT_MS in constants.ts.
+        const rulesEl = document.getElementById('rules-play-timeout');
+        if (rulesEl) rulesEl.textContent = String(Math.round(c.PLAY_TIMEOUT_MS / 1000));
+      }
     }).catch(() => {});
     const btn = document.getElementById('dev-disconnect-btn');
     if (btn) btn.textContent = '断开';
@@ -450,6 +623,7 @@ function connect(): void {
         gameDirection = message.direction || 1;
         gameState = message.gameState || 0;
         drawingChain = message.drawingCount || 0;
+        turnDeadline = (typeof message.turnDeadline === 'number') ? message.turnDeadline : null;
         myLobbyId = message.lobbyId || null;
         store.set('unoPlayerId', myId!);
         store.set('unoInLobby', '1');
@@ -484,6 +658,7 @@ function connect(): void {
         gameDirection = message.direction || 1;
         gameState = message.gameState || 0;
         drawingChain = message.drawingCount || 0;
+        turnDeadline = (typeof message.turnDeadline === 'number') ? message.turnDeadline : null;
         myHand = message.hand || [];
         updatePlayers(players, currentTurn);
         updateDiscardPile(message.discardPile || []);
@@ -509,6 +684,7 @@ function connect(): void {
         gameDirection = message.direction || 1;
         gameState = message.gameState || 0;
         drawingChain = message.drawingCount || 0;
+        turnDeadline = (typeof message.turnDeadline === 'number') ? message.turnDeadline : null;
         myHand = message.hand || [];
         updatePlayers(players, currentTurn);
         updateDiscardPile(message.discardPile || []);
@@ -581,6 +757,17 @@ function connect(): void {
       case 'reaction':
         showReaction(message.playerId || '', message.type || '', message.content || '');
         break;
+
+      case 'turn_timeout': {
+        // Server auto-drew because the player let the timer expire. Show a
+        // brief toast to everyone — the server will follow up with an
+        // 'update' that advances the turn so we don't need to mutate
+        // state here.
+        const name = message.playerName || '玩家';
+        const isMe = message.playerId === myId;
+        showTurnTimeoutToast(isMe ? '你超时未操作，自动抽牌' : `${name} 超时未操作，自动抽牌`);
+        break;
+      }
     }
   };
 
@@ -661,6 +848,8 @@ function updateTurnIndicator(): void {
     turnText.textContent = '等待游戏开始...';
     turnIndicator.classList.remove('my-turn');
     document.body.classList.add('player-action-disabled');
+    stopTurnCountdown();
+    setTurnTimerText('');
     return;
   }
 
@@ -677,6 +866,18 @@ function updateTurnIndicator(): void {
     turnText.textContent = `${currentPlayer ? currentPlayer.name : '-'}的回合`;
     turnIndicator.classList.remove('my-turn');
     document.body.classList.add('player-action-disabled');
+  }
+
+  // Drive the countdown display. The visible text is computed from
+  // Date.now() vs. the absolute deadline broadcast by the server, NOT from
+  // a relative setInterval — this is intentional: when the tab moves to
+  // the background the browser may stop firing intervals, but the next
+  // animation frame after the tab refocuses will show the correct value.
+  if (turnDeadline !== null && currentPlayer && !currentPlayer.isAI && !currentPlayer.disconnected) {
+    startTurnCountdown();
+  } else {
+    stopTurnCountdown();
+    setTurnTimerText('');
   }
 
   // Build turn order display
@@ -759,7 +960,10 @@ function resetGameState(): void {
   localStorage.removeItem('unoInGame');
   document.getElementById('about-clear-btn')!.style.display = '';
   document.getElementById('about-storage-title')!.style.display = '';
-  if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
+  stopReconnectCountdown();
+  stopTurnCountdown();
+  setTurnTimerText('');
+  turnDeadline = null;
   // Reset to lobby
   lobbyDiv.style.display = 'block';
   gameDiv.style.display = 'none';
@@ -915,14 +1119,51 @@ function updatePlayers(newPlayers: Player[], turn: number): void {
   drawModeArea.style.display = (me && me.isCreator) ? 'flex' : 'none';
   updateReadyButton();
 
-  if (countdownInterval) {
-    clearInterval(countdownInterval);
-    countdownInterval = null;
-  }
+  // Drive the reconnect-countdown text via rAF instead of setInterval. The
+  // setInterval approach is throttled to once per minute when the tab is
+  // backgrounded, so the displayed seconds-remaining could lag wildly. rAF
+  // is paused when the tab is hidden but resumes on focus and the next
+  // frame snaps to the correct Date.now() diff with no drift.
   const hasDeadline = newPlayers.some(p => p.disconnected && !!p.reconnectDeadline);
   if (hasDeadline) {
-    countdownInterval = setInterval(() => updatePlayers(players, currentTurn), 1000);
+    startReconnectCountdown();
+  } else {
+    stopReconnectCountdown();
   }
+}
+
+// Reconnect-countdown helpers — only re-renders when the displayed seconds
+// value would actually change, so we don't thrash the DOM at 60fps.
+function tickReconnectCountdown(): void {
+  let needsRender = false;
+  for (const p of players) {
+    if (p.disconnected && p.reconnectDeadline) {
+      const sec = Math.max(0, Math.ceil((p.reconnectDeadline - Date.now()) / 1000));
+      if (reconnectCountdownLastSec.get(p.id) !== sec) {
+        reconnectCountdownLastSec.set(p.id, sec);
+        needsRender = true;
+      }
+    }
+  }
+  if (needsRender) {
+    updatePlayers(players, currentTurn);
+  }
+  if (players.some(p => p.disconnected && !!p.reconnectDeadline)) {
+    reconnectCountdownRaf = window.requestAnimationFrame(tickReconnectCountdown);
+  } else {
+    reconnectCountdownRaf = null;
+  }
+}
+function startReconnectCountdown(): void {
+  if (reconnectCountdownRaf !== null) return;
+  reconnectCountdownRaf = window.requestAnimationFrame(tickReconnectCountdown);
+}
+function stopReconnectCountdown(): void {
+  if (reconnectCountdownRaf !== null) {
+    window.cancelAnimationFrame(reconnectCountdownRaf);
+    reconnectCountdownRaf = null;
+  }
+  reconnectCountdownLastSec.clear();
 }
 
 function updateHand(hand: Card[]): void {
@@ -933,6 +1174,10 @@ function updateHand(hand: Card[]): void {
   const topColor = discardCard ? discardCard.getAttribute('data-color') : null;
   const topType = discardCard ? discardCard.getAttribute('data-type') : null;
 
+  // Auto-clear out-of-bounds keyboard hover (e.g. after we played the
+  // hovered card our hand shrank and the index now points past the end).
+  if (keyboardHoverIndex >= hand.length) keyboardHoverIndex = -1;
+
   for (let i = 0; i < hand.length; i++) {
     const card = hand[i];
     const cardDiv = createCard(card);
@@ -941,6 +1186,13 @@ function updateHand(hand: Card[]): void {
 
     if (selectedCards.some(selected => selected.index === i)) {
       cardDiv.classList.add('selected');
+    }
+
+    // Keyboard-driven hover (Task 6) — mirror the cursor-hover treatment
+    // for the active digit-key target so the user gets visual confirmation
+    // before pressing Enter to play.
+    if (i === keyboardHoverIndex) {
+      cardDiv.classList.add('keyboard-hover');
     }
 
     // Mark non-playable cards (no hover lift)
@@ -978,22 +1230,66 @@ async function handleCardClick(card: Card, cardIndex: number, hand: Card[]): Pro
     hideWildColorPicker();
   }
 
+  // Bug #4: a click should only matter if it is actually our turn AND the
+  // card can legally be played. Otherwise a click on a disabled card used
+  // to surface the "break chain" confirm even when nothing was going to
+  // happen — a confusing UX and a vector for accidental forfeits.
+  const me = players.find(p => p.id === myId);
+  const isMyTurn = !!me && players[currentTurn] && players[currentTurn].id === myId;
+  if (!isMyTurn || isSpectating) {
+    // Off-turn clicks are inert — leave selection state alone (so the user
+    // can preview, but no dialog and no message goes to the server).
+    return;
+  }
+  if (!isCardPlayable(card)) {
+    // Card visually has the .not-playable lift suppressed; we additionally
+    // bail early so the chain-break dialog doesn't appear for a card we
+    // would have rejected anyway.
+    return;
+  }
+
   // Check if we're selecting multiple cards
   if (isSelectingMultiple) {
     toggleCardSelection(card, cardIndex, hand);
   } else {
     // Single card play
     if (card.type === 'wild' || card.type === 'wild4') {
+      // Bug #2: wild (no number) and wild4 also break the chain in chain
+      // mode — confirm before the player commits the penalty. wild4 is
+      // itself a draw card so it's chain-extending in chain mode and never
+      // hits this branch's confirm; wild is the regular non-draw wild card
+      // and absolutely should warn.
+      if (gameState === 1 && card.type === 'wild' && drawingChain > 0) {
+        const ok = await showConfirm(`确定要打破链式加牌吗？\n你将抽 ${drawingChain} 张牌`);
+        if (!ok) return;
+      }
       showWildColorPicker(card);
     } else {
       // In drawing chain state, confirm before breaking with non-draw2/wild4
-      if (gameState === 1 && card.type !== 'draw2' && card.type !== 'wild4') {
+      if (gameState === 1 && card.type !== 'draw2' && card.type !== 'wild4' && drawingChain > 0) {
         const ok = await showConfirm(`确定要打破链式加牌吗？\n你将抽 ${drawingChain} 张牌`);
         if (!ok) return;
       }
       sendMessage({ action: 'play', card: card });
     }
   }
+}
+
+// True iff `card` is legal against the current discard top. Mirrors the
+// server-side isValidMove logic (kept in sync manually since the client
+// does not import server modules).
+function isCardPlayable(card: Card): boolean {
+  const discardCard = discardPileDiv.querySelector('.card');
+  if (!discardCard) return true;
+  const topColor = discardCard.getAttribute('data-color');
+  const topType = discardCard.getAttribute('data-type');
+  if (!topColor || !topType) return true;
+  if (card.type === 'wild' || card.type === 'wild4') return true;
+  if (card.color === topColor) return true;
+  if (card.type === topType) return true;
+  const isNCard = (t: string) => t === 'draw2' || t === 'wild4';
+  if (isNCard(card.type) && isNCard(topType)) return true;
+  return false;
 }
 
 function startMultipleSelection(card: Card, cardIndex: number): void {
@@ -1409,6 +1705,72 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }, 300);
   });
+
+  // Task 6 — keyboard digit selection. 1-9 (and Numpad1-9) hover the
+  // corresponding hand card; 0 / Numpad0 hovers the tenth card. Enter
+  // plays the hovered card. ESC or a click on empty space cancels.
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    // The wild-color picker / modal capture their own keys; bail so we
+    // don't double-handle.
+    if (modalOverlay.style.display === 'flex') return;
+    // Only hover/play during the live game UI and only on our turn.
+    if (gameDiv.style.display === 'none' || isSpectating) return;
+
+    if (e.key === 'Escape') {
+      if (keyboardHoverIndex !== -1) {
+        e.preventDefault();
+        clearKeyboardHover();
+      }
+      return;
+    }
+    if (e.key === 'Enter') {
+      // Don't hijack Enter when focus is in a text input (chat) — that's
+      // already handled by the input's own listener.
+      const tag = (document.activeElement && (document.activeElement as HTMLElement).tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (keyboardHoverIndex < 0 || keyboardHoverIndex >= myHand.length) return;
+      e.preventDefault();
+      const card = myHand[keyboardHoverIndex];
+      const idx = keyboardHoverIndex;
+      // Clear hover first so the next render isn't out of sync if the play
+      // is rejected (e.g. not our turn).
+      clearKeyboardHover();
+      // Reuse handleCardClick so all the same chain-break/wild-picker
+      // checks fire. handleCardClick already ignores off-turn / unplayable
+      // clicks (Bug #4 fix), so we don't need to gate again here.
+      handleCardClick(card, idx, myHand);
+      return;
+    }
+    const idx = digitFromKeyEvent(e);
+    if (idx === -1) return;
+    if (idx >= myHand.length) {
+      // Pressing a digit higher than hand size is a clear cancel.
+      clearKeyboardHover();
+      return;
+    }
+    e.preventDefault();
+    setKeyboardHover(idx);
+  });
+
+  // Click on empty area cancels the keyboard hover. We listen on document
+  // and skip clicks that originated inside the player hand, action area or
+  // any modal — those have their own click handlers.
+  document.addEventListener('click', (e: Event) => {
+    if (keyboardHoverIndex === -1) return;
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    if (
+      target.closest('#player-hand') ||
+      target.closest('#action-buttons') ||
+      target.closest('#wild-color-picker') ||
+      target.closest('#modal-overlay') ||
+      target.closest('#dev-panel') ||
+      target.closest('#reaction-bar')
+    ) {
+      return;
+    }
+    clearKeyboardHover();
+  });
 });
 
 function copyLobbyId(): void {
@@ -1521,6 +1883,24 @@ function createDisconnectedToast(): HTMLDivElement {
   toast.id = 'disconnected-toast';
   document.body.appendChild(toast);
   return toast;
+}
+
+// Transient message about the server having auto-drawn for a player. Uses
+// a separate DOM node from the disconnected toast so the two can coexist.
+let turnTimeoutToastTimer: ReturnType<typeof setTimeout> | null = null;
+function showTurnTimeoutToast(text: string): void {
+  let toast = document.getElementById('turn-timeout-toast') as HTMLDivElement | null;
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'turn-timeout-toast';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = text;
+  toast.classList.add('visible');
+  if (turnTimeoutToastTimer) clearTimeout(turnTimeoutToastTimer);
+  turnTimeoutToastTimer = setTimeout(() => {
+    toast!.classList.remove('visible');
+  }, 3500);
 }
 
 function createLeaveLobbyButton(): HTMLButtonElement {

@@ -115,7 +115,11 @@
             <button class="dev-btn" data-action="dev_add_all_cards">全部牌</button>
             <button class="dev-btn" data-action="dev_remove_cards" data-count="1">-1 牌</button>
             <button class="dev-btn" data-action="dev_remove_cards" data-count="5">-5 牌</button>
+            <button class="dev-btn" data-action="dev_clear_hand">清空手牌</button>
             <button class="dev-btn" data-action="dev_skip">跳回合</button>
+            <button class="dev-btn" data-action="dev_set_chain" data-count="2">链 +2</button>
+            <button class="dev-btn" data-action="dev_set_chain" data-count="6">链 +6</button>
+            <button class="dev-btn" data-action="dev_set_chain" data-count="0">清链</button>
             <button class="dev-btn" id="dev-disconnect-btn" data-action="dev_disconnect">断开</button>
             <button class="dev-btn" data-action="dev_export_state">导出状态</button>
             <button class="dev-btn call-win-btn" data-action="dev_call_win">🏆 胜利</button>
@@ -205,6 +209,13 @@
 
             <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">认输 · 观战</h3>
             <p style="font-size:0.85rem;color:#a0aec0;">2 人局认输 = 对手胜。≥3 人局认输可选择进入观战模式继续观战，或离开房间。</p>
+
+            <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">出牌超时</h3>
+            <p style="font-size:0.85rem;color:#a0aec0;">每个回合的玩家有限定时间内必须出牌或抽牌（默认 <span id="rules-play-timeout">30</span> 秒），超时则系统自动为该玩家抽一张牌并轮到下一位玩家。倒计时显示在回合提示旁。</p>
+
+            <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">键盘快捷键</h3>
+            <p style="font-size:0.85rem;color:#a0aec0;">出牌时可按 1~9（或小键盘 1~9）选中第 1 至第 9 张手牌，按 0（或 Numpad0）选中第 10 张，再按 <b>Enter</b> 出牌；ESC 或点击空白区域取消选择。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;">弹窗内可按 Tab / 方向键在「确定 / 取消」之间切换，按 Enter 执行所选按钮。</p>
 
             <button id="rules-close-btn"
                 style="width:100%;padding:10px;margin-top:24px;border:1px solid #374151;border-radius:10px;background:transparent;color:#a0aec0;font-size:0.85rem;cursor:pointer;font-family:inherit;">关闭</button>
