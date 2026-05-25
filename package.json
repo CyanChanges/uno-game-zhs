@@ -1,6 +1,6 @@
 {
   "name": "uno",
-  "version": "0.1.0.4",
+  "version": "0.1.0.5",
   "scripts": {
     "build": "node scripts/gen-icon-manifest.js && tsc -p tsconfig.server.json && tsc -p tsconfig.client.json && node scripts/copy-assets.js",
     "start": "node dist/server.js",
