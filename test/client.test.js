@@ -1785,9 +1785,9 @@ describe('UNO Client', () => {
     await pageA.close(); await pageB.close()
   })
 
-  // Task #6: pressing a digit key highlights the corresponding card with
-  // .keyboard-hover; pressing Enter plays the card; Escape clears the
-  // highlight.
+  // Task #6 follow-up: pressing a digit key highlights the corresponding
+  // card; the cards also visibly show the matching digit badge so users
+  // know which key plays which card.
   it('keyboard digit selects card and Enter plays it', { timeout: 30000 }, async () => {
     const pageA = await browser.newPage()
     const pageB = await browser.newPage()
@@ -1863,4 +1863,143 @@ describe('UNO Client', () => {
 
     await pageA.close(); await pageB.close()
   })
+
+  // Task #3 (visual digit badges): cards visibly show the matching digit
+  // so users know which key plays which card.
+  it('shows keyboard digit badges on the active player\'s hand cards', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'badge-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const turnPage = (await isMyTurn(pageA)) ? pageA : pageB
+    const offPage = turnPage === pageA ? pageB : pageA
+
+    // The active player's cards should have visible digit badges.
+    const activeBadges = await turnPage.$$eval('#player-hand .card .card-key-badge', els =>
+      els.map(e => e.textContent)
+    )
+    expect(activeBadges.length).toBeGreaterThan(0)
+    // First card carries '1', second '2', tenth '0'.
+    expect(activeBadges[0]).toBe('1')
+    if (activeBadges.length > 1) expect(activeBadges[1]).toBe('2')
+
+    // The off-turn player must NOT see badges on its hand — the digit
+    // shortcuts are inert when it isn't your turn.
+    const offBadges = await offPage.$$eval('#player-hand .card .card-key-badge', els => els.length)
+    expect(offBadges).toBe(0)
+
+    await pageA.close(); await pageB.close()
+  })
+
+  // Task #2: wild color picker is fully keyboard-driven.
+  it('wild color picker supports digit / arrow / Enter / Esc', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'wildkbd-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const turnPage = (await isMyTurn(pageA)) ? pageA : pageB
+
+    // Stage a wild card in our hand so the picker fires.
+    await turnPage.evaluate(() => sendMessage({ action: 'dev_clear_hand' }))
+    await turnPage.waitForTimeout(200)
+    await turnPage.evaluate(() => sendMessage({ action: 'dev_give_card', card: { type: 'wild' } }))
+    await turnPage.waitForFunction(() => {
+      return document.querySelectorAll('#player-hand .card').length === 1
+    })
+    await turnPage.evaluate(() => {
+      const card = document.querySelector('#player-hand .card')
+      card.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await turnPage.waitForFunction(() => {
+      const el = document.getElementById('wild-color-picker')
+      return el && el.style.display !== 'none'
+    })
+
+    // Each color option should display the keyboard hint badge.
+    const keyHints = await turnPage.$$eval('.color-option', els => els.map(e => e.getAttribute('data-key')))
+    expect(keyHints).toEqual(['1', '2', '3', '4'])
+
+    // Press ArrowRight to highlight the first color, then ArrowRight again
+    // to move to yellow.
+    await turnPage.keyboard.press('ArrowRight')
+    let hovered = await turnPage.$eval('.color-option.keyboard-hover', el => el.getAttribute('data-color'))
+    expect(hovered).toBe('red')
+    await turnPage.keyboard.press('ArrowRight')
+    hovered = await turnPage.$eval('.color-option.keyboard-hover', el => el.getAttribute('data-color'))
+    expect(hovered).toBe('yellow')
+
+    // Esc closes the picker without committing.
+    await turnPage.keyboard.press('Escape')
+    await turnPage.waitForFunction(() => {
+      const el = document.getElementById('wild-color-picker')
+      return el && el.style.display === 'none'
+    })
+
+    // Re-open and confirm digit 3 commits "green" directly.
+    await turnPage.evaluate(() => {
+      const card = document.querySelector('#player-hand .card')
+      card.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await turnPage.waitForFunction(() => {
+      const el = document.getElementById('wild-color-picker')
+      return el && el.style.display !== 'none'
+    })
+    await turnPage.keyboard.press('Digit3')
+    // Picker should close and the wild card should have been played as green.
+    await turnPage.waitForFunction(() => {
+      const el = document.getElementById('wild-color-picker')
+      return el && el.style.display === 'none'
+    })
+    // After play, the discard top should be a wild with color=green.
+    await turnPage.waitForFunction(() => {
+      const card = document.querySelector('#discard-pile .card')
+      if (!card) return false
+      return card.getAttribute('data-color') === 'green' && card.getAttribute('data-type') === 'wild'
+    }, { timeout: 5000 })
+
+    await pageA.close(); await pageB.close()
+  })
+
 })

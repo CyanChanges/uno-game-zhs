@@ -507,12 +507,44 @@ h1 {
     cursor: pointer;
     transition: all 0.3s ease;
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    /* Position context for the keyboard digit overlay below. */
+    position: relative;
 }
 
-.color-option:hover {
+/* Keyboard digit hint shown on each color so users see the shortcut at
+   a glance. The badge sits in the upper-right corner; for the picker the
+   digit is sourced from data-key (1..4). */
+.color-option[data-key]::after {
+    content: attr(data-key);
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border-radius: 9px;
+    background: rgba(30, 30, 30, 0.92);
+    color: #ffd166;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
+    border: 1px solid rgba(255, 209, 102, 0.6);
+    pointer-events: none;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.35);
+}
+
+.color-option:hover, .color-option.keyboard-hover {
     transform: scale(1.15);
     border-color: #667eea;
     box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+}
+
+/* The keyboard-driven hover is loud-and-proud so users see exactly which
+   color Enter would commit. */
+.color-option.keyboard-hover {
+    border-color: #ffd166;
+    box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.5), 0 8px 16px rgba(0, 0, 0, 0.25);
 }
 
 #cancel-wild-btn {
@@ -1921,4 +1953,27 @@ footer a:hover {
 
 #turn-timeout-toast.visible {
     transform: translate(-50%, 0);
+}
+
+/* Card keyboard-shortcut badge — top-right corner, similar to the wild
+   color-picker digit hint. Only painted on the active player's first 10
+   hand cards (see updateHand). */
+.card .card-key-badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border-radius: 9px;
+    background: rgba(30, 30, 30, 0.85);
+    color: #ffd166;
+    font-size: 0.7rem;
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
+    border: 1px solid rgba(255, 209, 102, 0.5);
+    pointer-events: none;
+    z-index: 5;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
 }

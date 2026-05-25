@@ -1195,6 +1195,21 @@ function updateHand(hand: Card[]): void {
       cardDiv.classList.add('keyboard-hover');
     }
 
+    // Add a small digit badge to the first 10 cards so the user can see
+    // which keyboard digit selects each one. Only drawn for the active
+    // player so spectators / off-turn players don't get a misleading
+    // shortcut hint.
+    if (i < 10) {
+      const meIsTurn = !!players[currentTurn] && players[currentTurn].id === myId && !isSpectating;
+      if (meIsTurn) {
+        const badge = document.createElement('span');
+        badge.classList.add('card-key-badge');
+        // 0-indexed → display as 1..9, 0 for the tenth slot.
+        badge.textContent = String((i + 1) % 10);
+        cardDiv.appendChild(badge);
+      }
+    }
+
     // Mark non-playable cards (no hover lift)
     if (topColor && topType) {
       const isNCard = (t: string) => t === 'draw2' || t === 'wild4';
@@ -1355,10 +1370,48 @@ function getCurrentHand(): Card[] {
 let wildPickerScrollY = 0;
 let onWildPickerScroll: (() => void) | null = null;
 
+// ── Wild color-picker keyboard support ──────────────────
+// The picker is fully keyboard-driven (Task 2): digit 1-4 picks the
+// matching color, ←/→ cycles the keyboard-hover ring, Enter commits the
+// hovered color, Esc cancels. Mirrors the pattern used by the modal so
+// users don't have to learn two different shortcut sets.
+const WILD_COLORS = ['red', 'yellow', 'green', 'blue'] as const;
+let wildKeyboardIndex = -1;
+let detachWildKeyboard: (() => void) | null = null;
+function setWildKeyboardHover(idx: number): void {
+  wildKeyboardIndex = idx;
+  for (const opt of Array.from(colorOptions.querySelectorAll('.color-option')) as HTMLElement[]) {
+    opt.classList.remove('keyboard-hover');
+  }
+  if (idx >= 0 && idx < WILD_COLORS.length) {
+    const target = colorOptions.querySelector(`.color-option[data-color="${WILD_COLORS[idx]}"]`) as HTMLElement | null;
+    if (target) target.classList.add('keyboard-hover');
+  }
+}
+function commitWildPick(color: string): void {
+  if (!pendingWildCard) return;
+  if (Array.isArray(pendingWildCard)) {
+    sendMessage({
+      action: 'play_multiple',
+      cards: pendingWildCard.map(card => ({ ...card, color })),
+      indices: selectedCards.map(s => s.index),
+    });
+    clearSelection();
+  } else {
+    sendMessage({ action: 'play', card: { ...pendingWildCard, color } });
+  }
+  wildPickerScrollY = 0;
+  hideWildColorPicker();
+}
+
 function showWildColorPicker(card: Card): void {
   pendingWildCard = card;
   wildPickerScrollY = window.scrollY;
   wildColorPicker.style.display = 'block';
+  // Default to no keyboard hover — first digit / arrow press picks one.
+  setWildKeyboardHover(-1);
+  // Attach the keyboard handler for this open instance.
+  detachWildKeyboard = attachWildKeyboard();
   requestAnimationFrame(() => {
     wildColorPicker.scrollIntoView({ behavior: 'smooth', block: 'center' });
     // Attach manual scroll listener after auto-scroll settles
@@ -1372,6 +1425,11 @@ function showWildColorPicker(card: Card): void {
 function hideWildColorPicker(): void {
   wildColorPicker.style.display = 'none';
   pendingWildCard = null;
+  setWildKeyboardHover(-1);
+  if (detachWildKeyboard) {
+    detachWildKeyboard();
+    detachWildKeyboard = null;
+  }
   if (onWildPickerScroll) {
     window.removeEventListener('scroll', onWildPickerScroll);
     onWildPickerScroll = null;
@@ -1380,6 +1438,51 @@ function hideWildColorPicker(): void {
     window.scrollTo({ top: wildPickerScrollY, behavior: 'smooth' });
     wildPickerScrollY = 0;
   }
+}
+
+function attachWildKeyboard(): () => void {
+  function onKey(e: KeyboardEvent): void {
+    // Don't hijack keys when focus is in a text input — chat would break.
+    const tag = (document.activeElement && (document.activeElement as HTMLElement).tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      hideWildColorPicker();
+      return;
+    }
+    if (e.key === 'Enter') {
+      if (wildKeyboardIndex < 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      commitWildPick(WILD_COLORS[wildKeyboardIndex]);
+      return;
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const next = wildKeyboardIndex < 0 ? WILD_COLORS.length - 1 : (wildKeyboardIndex - 1 + WILD_COLORS.length) % WILD_COLORS.length;
+      setWildKeyboardHover(next);
+      return;
+    }
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'Tab') {
+      e.preventDefault();
+      const next = wildKeyboardIndex < 0 ? 0 : (wildKeyboardIndex + 1) % WILD_COLORS.length;
+      setWildKeyboardHover(next);
+      return;
+    }
+    // Digit 1-4 directly commits the corresponding color.
+    let digit = -1;
+    if (/^Digit[1-4]$/.test(e.code)) digit = Number(e.code.slice(5));
+    else if (/^Numpad[1-4]$/.test(e.code)) digit = Number(e.code.slice(6));
+    if (digit >= 1 && digit <= 4) {
+      e.preventDefault();
+      e.stopPropagation();
+      commitWildPick(WILD_COLORS[digit - 1]);
+    }
+  }
+  document.addEventListener('keydown', onKey, true);
+  return () => document.removeEventListener('keydown', onKey, true);
 }
 
 function updateDiscardPile(discardPile: Card[]): void {
@@ -1713,6 +1816,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // The wild-color picker / modal capture their own keys; bail so we
     // don't double-handle.
     if (modalOverlay.style.display === 'flex') return;
+    if (wildColorPicker.style.display === 'block') return;
     // Only hover/play during the live game UI and only on our turn.
     if (gameDiv.style.display === 'none' || isSpectating) return;
 
