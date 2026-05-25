@@ -1,10 +1,17 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { Server, IncomingMessage, ServerResponse } from 'http';
 import { readFileSync, existsSync } from 'fs';
+import { randomBytes } from 'crypto';
 import path from 'path';
 import { decideMove } from './aiplayer';
 import { ERR, errorResponse, ErrorCode } from './errors';
-import { RECONNECT_DEFER_MS, RECONNECT_DEADLINE_MS, DISCONNECT_REMOVE_MS, MAX_HAND_CARDS, NAME_LENGTH_MIN, NAME_LENGTH_MAX } from './constants';
+import {
+  RECONNECT_DEFER_MS, RECONNECT_DEADLINE_MS, DISCONNECT_REMOVE_MS,
+  MAX_HAND_CARDS, NAME_LENGTH_MIN, NAME_LENGTH_MAX,
+  LOBBY_ID_LENGTH_MIN, LOBBY_ID_LENGTH_MAX,
+  MAX_AI_PER_LOBBY, REACTION_CONTENT_MAX,
+  WS_MAX_PAYLOAD, MAX_PARSE_ERRORS_PER_CONN,
+} from './constants';
 
 interface Card {
   color?: string;
@@ -82,7 +89,11 @@ interface ClientMessage {
 type StaticFile = [string, string];
 
 const allowFiles: StaticFile[] = [['index.html', 'text/html'], ['client.js', 'text/javascript'], ['style.css', 'text/css']];
-const files: Record<string, { content: Buffer; type: string }> = {};
+// Use a null-prototype object so the `in` operator never matches Object.prototype
+// keys like __proto__, constructor, toString. Without this, GET /__proto__ falls
+// into the static-file branch with a destructured `type` of `undefined`, which
+// then crashes the server via res.setHeader('Content-Type', undefined).
+const files: Record<string, { content: Buffer; type: string }> = Object.create(null);
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 
@@ -93,6 +104,44 @@ function safeResolve(...segments: string[]): string | null {
   if (resolved.startsWith(cwd + path.sep) || resolved === cwd) return resolved;
   if (resolved.startsWith(root + path.sep) || resolved === root) return resolved;
   return null;
+}
+
+// ── Input validation ────────────────────────────────────
+// Lobby IDs are used as Map keys and broadcast to clients; restrict the
+// character set so they can't be abused for memory growth, log injection or
+// UI breakage.
+const LOBBY_ID_REGEX = /^[\u0020-\u007E\u4e00-\u9fff]+$/; // printable ASCII or CJK
+function isValidLobbyId(v: unknown): v is string {
+  return typeof v === 'string'
+    && v.length >= LOBBY_ID_LENGTH_MIN
+    && v.length <= LOBBY_ID_LENGTH_MAX
+    && LOBBY_ID_REGEX.test(v);
+}
+
+function isValidPlayerName(v: unknown): v is string {
+  return typeof v === 'string'
+    && v.length >= NAME_LENGTH_MIN
+    && v.length <= NAME_LENGTH_MAX;
+}
+
+// Origin allowlist for WebSocket upgrades. Defaults to "same host" — i.e. the
+// browser's origin must match a Host header the server itself listens on. The
+// operator can override via ALLOWED_ORIGINS=https://a.example,https://b.example
+// (comma separated). Empty / non-browser clients (no Origin header) are still
+// allowed because they are not subject to the cross-site abuse this guards
+// against.
+const EXTRA_ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+function isAllowedOrigin(origin: string | undefined, hostHeader: string | undefined): boolean {
+  if (!origin) return true; // non-browser client
+  if (EXTRA_ALLOWED_ORIGINS.includes(origin)) return true;
+  if (!hostHeader) return false;
+  try {
+    const u = new URL(origin);
+    return u.host === hostHeader;
+  } catch {
+    return false;
+  }
 }
 
 const PKG = JSON.parse(readFileSync(safeResolve(PROJECT_ROOT, 'package.json')!, 'utf-8'));
@@ -137,6 +186,18 @@ const httpServer = new Server((req: IncomingMessage, res: ServerResponse) => {
   const url = (req.url || '').toLowerCase();
   const filename = url.slice(1);
 
+  // Defense-in-depth security headers. Even though our client renders all
+  // user content via textContent / encodeUGC, CSP and the others limit the
+  // blast radius of any future regression.
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+    + "connect-src 'self' ws: wss:; base-uri 'none'; frame-ancestors 'none'"
+  );
+
   if (url === '/') {
     const { content, type } = files[allowFiles[0][0]];
     res.setHeader('Content-Type', type);
@@ -177,16 +238,33 @@ const httpServer = new Server((req: IncomingMessage, res: ServerResponse) => {
 httpServer.on('upgrade', (request: IncomingMessage, socket: import('net').Socket, head: Buffer) => {
   const { pathname } = new URL(request.url!, `http://${request.headers.host}`);
 
-  if (pathname === '/ws') {
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
-    });
-  } else {
+  if (pathname !== '/ws') {
     socket.destroy();
+    return;
   }
+
+  // Origin check — reject cross-site WebSocket hijacking attempts. The
+  // browser enforces same-origin for fetch/XHR but NOT for WebSockets, so
+  // the server has to do it. Non-browser clients omit Origin and are allowed
+  // through (they're not subject to CSWSH).
+  const origin = request.headers.origin as string | undefined;
+  if (!isAllowedOrigin(origin, request.headers.host)) {
+    serverWarn('rejected ws upgrade from cross-origin', { origin, host: request.headers.host });
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
 });
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD });
+// Catch-all for any error bubbled to the WebSocketServer itself; without this
+// rare server-level errors (e.g. bad upgrade frames) would crash the process.
+wss.on('error', (err: Error) => {
+  console.warn('[server] wss error', err.message);
+});
 
 const clients = new Map<WebSocket, ClientMetadata>();
 const lobbies = new Map<string, Lobby>();
@@ -526,18 +604,33 @@ function handlePlayMultiple(lobbyId: string, playerId: string, cards: Card[]): v
     return;
   }
 
-  cards.forEach(card => {
+  // Verify every card is actually in the hand before mutating game state.
+  // Otherwise a client could submit forged cards and pollute the discard pile
+  // / inflict penalties on opponents while keeping its own hand intact.
+  // Build a working copy of the hand so duplicate cards in `cards` consume
+  // distinct hand slots (we can't reuse the same hand index twice).
+  const handCopy = player.hand!.slice();
+  const indicesToRemove: number[] = [];
+  for (const card of cards) {
     let cardIndex: number;
     if (card.type === 'wild' || card.type === 'wild4') {
-      cardIndex = player.hand!.findIndex(c => c.type === card.type);
+      cardIndex = handCopy.findIndex(c => c && c.type === card.type);
     } else {
-      cardIndex = player.hand!.findIndex(c => c.color === card.color && c.type === card.type);
+      cardIndex = handCopy.findIndex(c => c && c.color === card.color && c.type === card.type);
     }
+    if (cardIndex < 0) {
+      return;
+    }
+    indicesToRemove.push(cardIndex);
+    // Mark slot as consumed so the next iteration can't reuse it.
+    (handCopy as (Card | null)[])[cardIndex] = null;
+  }
 
-    if (cardIndex >= 0) {
-      player.hand!.splice(cardIndex, 1);
-    }
-  });
+  // All cards confirmed in hand — apply the removals to the real hand.
+  // Sort descending so splice() doesn't shift remaining indices.
+  for (const i of indicesToRemove.slice().sort((a, b) => b - a)) {
+    player.hand!.splice(i, 1);
+  }
 
   const lastCard = cards[cards.length - 1];
   lobby.game.discardPile.push(lastCard);
@@ -611,9 +704,15 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
       cardIndex = player!.hand!.findIndex(c => c.color === card.color && c.type === card.type);
     }
 
-    if (cardIndex >= 0) {
-      player!.hand!.splice(cardIndex, 1);
+    // Reject plays of cards that are not actually in the player's hand:
+    // without this check, a malicious client could push arbitrary cards onto
+    // the discard pile (e.g. a forged wild4) and trigger penalties on opponents
+    // without ever consuming their own hand.
+    if (cardIndex < 0) {
+      return;
     }
+
+    player!.hand!.splice(cardIndex, 1);
 
     lobby.game.discardPile.push(card);
 
@@ -791,11 +890,22 @@ function handleUno(lobbyId: string, playerId: string): void {
 }
 
 function uuidv4(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-    const r = Math.random() * 16 | 0;
-    const v = c === 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
+  // crypto.randomBytes is CSPRNG-backed and available since Node 0.10, so
+  // this works under Node 12 (the minimum target for the pkg-built binary)
+  // while still avoiding Math.random's predictable output. Node's own
+  // crypto.randomUUID would be cleaner but only landed in 14.17.
+  const bytes = randomBytes(16);
+  // Per RFC 4122 §4.4: set version (4) and variant (10).
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return (
+    hex.slice(0, 8) + '-' +
+    hex.slice(8, 12) + '-' +
+    hex.slice(12, 16) + '-' +
+    hex.slice(16, 20) + '-' +
+    hex.slice(20, 32)
+  );
 }
 
 wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
@@ -803,14 +913,42 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
   const metadata: ClientMetadata = { id };
   clients.set(ws, metadata);
 
+  // Bound the damage from a noisy / malicious client. After repeated invalid
+  // payloads we simply drop the connection rather than silently absorbing
+  // them forever.
+  let parseErrorCount = 0;
+
   ws.send(JSON.stringify({ action: 'init', dev: isDev(), id }));
   serverLog(`client connected ${id}`);
+
+  // The ws library raises an 'error' event on the WebSocket instance for
+  // protocol-level violations (oversized payload, malformed frame, etc).
+  // Without a listener Node treats it as an unhandled error and kills the
+  // whole process — i.e. any client could crash the server with a single
+  // bad frame. Just log it; the socket is closed automatically afterwards.
+  ws.on('error', (err: Error) => {
+    serverWarn('ws error', { id, message: err.message, code: (err as { code?: string }).code });
+  });
 
   ws.on('message', (messageAsString: Buffer | string) => {
     let message: ClientMessage;
     try {
       message = JSON.parse(messageAsString.toString());
     } catch (_e) {
+      parseErrorCount++;
+      if (parseErrorCount >= MAX_PARSE_ERRORS_PER_CONN) {
+        serverWarn('closing ws after too many invalid messages', { id, parseErrorCount });
+        try { ws.close(1008, 'invalid messages'); } catch {}
+      }
+      return;
+    }
+    // Reject anything that isn't a plain object — the rest of the dispatcher
+    // assumes `message.action` is a string and accesses other named fields.
+    if (!message || typeof message !== 'object' || Array.isArray(message)) {
+      parseErrorCount++;
+      if (parseErrorCount >= MAX_PARSE_ERRORS_PER_CONN) {
+        try { ws.close(1008, 'invalid messages'); } catch {}
+      }
       return;
     }
 
@@ -827,12 +965,12 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
     if (!(message.action || '').startsWith('dev_')) {
       switch (message.action) {
         case 'join': {
-          if (typeof message.name !== 'string' || message.name.length < NAME_LENGTH_MIN || message.name.length > NAME_LENGTH_MAX) {
+          if (!isValidPlayerName(message.name)) {
             ws.send(JSON.stringify(errorResponse('INVALID_PLAYER_NAME')));
             return;
           }
           metadata.name = message.name;
-          if (typeof message.lobbyId !== 'string' || !message.lobbyId.length) {
+          if (!isValidLobbyId(message.lobbyId)) {
             ws.send(JSON.stringify(errorResponse('NEED_LOBBY_NAME')));
             return;
           }
@@ -924,6 +1062,13 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           }
           if (startedLobbies.has(lobby.id)) {
             ws.send(JSON.stringify(errorResponse('GAME_ALREADY_STARTED')));
+            return;
+          }
+          // Cap AI count: each AI runs setTimeout/decideMove and bloats every
+          // players broadcast, so an unbounded count is a CPU + bandwidth DoS.
+          const aiCount = lobby.players.filter(p => p.isAI).length;
+          if (aiCount >= MAX_AI_PER_LOBBY) {
+            ws.send(JSON.stringify(errorResponse('AI_LIMIT_REACHED')));
             return;
           }
           const aiId = uuidv4();
@@ -1230,6 +1375,14 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
         }
 
         case 'spectate': {
+          if (!isValidLobbyId(message.lobbyId)) {
+            ws.send(JSON.stringify(errorResponse('NEED_LOBBY_NAME')));
+            return;
+          }
+          if (!isValidPlayerName(message.name)) {
+            ws.send(JSON.stringify(errorResponse('INVALID_PLAYER_NAME')));
+            return;
+          }
           const lobby = lobbies.get(message.lobbyId!);
           if (!lobby || !lobby.game.started) {
             ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED')));
@@ -1254,6 +1407,12 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
         case 'reaction':
           const lobby = lobbies.get(metadata.lobbyId!);
           if (!lobby || !lobby.game.started) break;
+          // Validate content for both emoji and text the same way: must be a
+          // bounded string. The emoji path used to accept arbitrary types and
+          // unlimited length, which let a malicious client broadcast an
+          // unbounded payload to every player in the room.
+          if (typeof message.content !== 'string' || message.content.length === 0) break;
+          if (message.content.length > REACTION_CONTENT_MAX) break;
           if (message.type === 'emoji') {
             broadcastToLobby(metadata.lobbyId!, {
               action: 'reaction',
@@ -1262,7 +1421,6 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
               content: message.content
             });
           } else if (message.type === 'text') {
-            if (typeof message.content !== 'string' || message.content.length === 0) break;
             let width = 0;
             for (const ch of message.content) {
               if (/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch)) width += 1;
@@ -1352,6 +1510,19 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           const lobby4 = findOrCreateLobby(metadata.lobbyId!);
           if (!lobby4.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
           lobby4.game.turn = (lobby4.game.turn + lobby4.game.direction + lobby4.players.length) % lobby4.players.length;
+          broadcastGameUpdate(metadata.lobbyId!);
+          return;
+        }
+        case 'dev_give_card': {
+          // Inject a specific card into the caller's hand. Used by tests that
+          // need to stage a particular game state (e.g. force a draw2 to be
+          // playable). Production deployments don't expose dev_* events.
+          const lobby = findOrCreateLobby(metadata.lobbyId!);
+          if (!lobby.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
+          const player = lobby.players.find(p => p.id === metadata.id);
+          if (!player) { ws.send(JSON.stringify(errorResponse('PLAYER_NOT_FOUND'))); return; }
+          if (!message.card || typeof message.card.type !== 'string') return;
+          player.hand!.push({ ...message.card });
           broadcastGameUpdate(metadata.lobbyId!);
           return;
         }

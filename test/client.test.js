@@ -507,9 +507,17 @@ describe('UNO Client', () => {
 
     await pageA.waitForTimeout(300)
 
-    // Verify A's storage reflects left state
+    // After leaving the lobby, two states are possible depending on how
+    // quickly the auto-reconnect onopen handler runs after the server
+    // closes the ws:
+    //   - the leave flag is still set ('true') because reconnect hasn't
+    //     happened yet
+    //   - the flag has been consumed (null) because onopen ran and cleared
+    //     it, having already taken the "left lobby" branch
+    // What we care about is the invariant that the player has dropped its
+    // session — unoPlayerId must be cleared either way.
     const leftFlag = await pageA.evaluate(() => store.get('unoLeftLobby'))
-    expect(leftFlag).toBe('true')
+    expect(leftFlag === 'true' || leftFlag === null).toBe(true)
     const noId = await pageA.evaluate(() => store.get('unoPlayerId'))
     expect(noId).toBeNull()
 
@@ -891,6 +899,14 @@ describe('UNO Client', () => {
       await pageA.waitForTimeout(500)
     }
 
+    // Give A a matching draw2 so the play is legitimate. The server rejects
+    // plays of cards not actually in the hand (security fix), so tests can
+    // no longer fabricate cards through `sendMessage`.
+    await pageA.evaluate((color) => {
+      sendMessage({ action: 'dev_give_card', card: { color: color, type: 'draw2' } })
+    }, topInfo.color)
+    await pageA.waitForTimeout(300)
+
     // A plays draw2
     await pageA.evaluate((color) => {
       sendMessage({ action: 'play', card: { color: color, type: 'draw2' } })
@@ -985,6 +1001,12 @@ describe('UNO Client', () => {
       const card = document.querySelector('#discard-pile .card')
       return card ? card.getAttribute('data-color') : 'red'
     })
+    // Give A a matching draw2 so the play is legitimate. The server rejects
+    // plays of cards not actually in the hand (security fix).
+    await pageA.evaluate((color) => {
+      sendMessage({ action: 'dev_give_card', card: { color: color, type: 'draw2' } })
+    }, topColor)
+    await pageA.waitForTimeout(300)
     await pageA.evaluate((color) => {
       sendMessage({ action: 'play', card: { color: color, type: 'draw2' } })
     }, topColor)
