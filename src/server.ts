@@ -283,6 +283,13 @@ const deferTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // absolute epoch ms by which the player must have acted (drawn or played).
 // Auto-draw mode is paused while no real-player has any time to act, e.g.
 // during AI turns or while the only human is reconnecting.
+//
+// The deadline is locked to the *turn*, not the active socket — otherwise a
+// player could refresh on their own turn to reset the 30-second window
+// indefinitely. We track which (player ID, turn-direction-stamp) the active
+// deadline belongs to and only mint a fresh deadline when the turn truly
+// changes; reconnects within the same turn re-arm the timer to the
+// REMAINING window only.
 interface TurnTimer {
   timer: ReturnType<typeof setTimeout>;
   deadline: number;
@@ -290,9 +297,30 @@ interface TurnTimer {
   // the current one are no-ops, preventing stale timers from firing after a
   // legitimate turn change beat them to it.
   token: number;
+  // Identity of the turn the deadline was minted for. While this matches
+  // the current state, scheduleTurnTimeout will REUSE the existing
+  // deadline instead of resetting the countdown.
+  turnPlayerId: string;
+  turnSerial: number;
 }
 const turnTimers = new Map<string, TurnTimer>();
 const turnTokens = new Map<string, number>();
+// Per-lobby snapshot of the turn instance the active deadline was minted
+// against. Used to detect "the turn changed" (player rotated, or same
+// player came around again after a full cycle) so we know whether a fresh
+// scheduleTurnTimeout call should mint a new deadline or reuse the
+// existing one. We capture both the player id AND the turn index — if a
+// game has 4 players and it cycles back to player 0, the index is the
+// same but the deadline must reset.
+interface TurnSnapshot {
+  playerId: string;
+  turnIndex: number;
+  // Direction is part of the snapshot so a reverse-card-only turn change
+  // (which keeps both index and player but inverts direction) is treated
+  // as a fresh turn even though no other field changed.
+  direction: number;
+}
+const lobbyTurnSnapshots = new Map<string, TurnSnapshot>();
 
 // ── Logging ──────────────────────────────────────────────
 const LOG_PREFIX = '[server]';
@@ -521,7 +549,7 @@ function broadcastWin(lobbyId: string, winnerName: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby) return;
 
-  clearTurnTimer(lobbyId);
+  resetTurnTimerState(lobbyId);
   broadcastToLobby(lobbyId, { action: 'win', winner: winnerName });
 
   for (const [, meta] of clients) {
@@ -536,7 +564,7 @@ function broadcastGameAborted(lobbyId: string, excludePlayerId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby) return;
 
-  clearTurnTimer(lobbyId);
+  resetTurnTimerState(lobbyId);
   broadcastToLobby(lobbyId, { action: 'game_aborted' }, excludePlayerId);
 
   for (const [client, meta] of clients) {
@@ -589,14 +617,30 @@ function clearTurnTimer(lobbyId: string): void {
   }
 }
 
+// Wipe everything tied to a lobby's turn-timer state — used at game-end
+// boundaries so the next game starts with a clean slate.
+function resetTurnTimerState(lobbyId: string): void {
+  clearTurnTimer(lobbyId);
+  lobbyTurnSnapshots.delete(lobbyId);
+  turnTokens.delete(lobbyId);
+}
+
 // Schedule (or reset) the per-turn timeout for the lobby. AI turns are not
 // timed (they act on their own setTimeout), and rounds with only AI players
 // remaining never auto-fire. The current real player has PLAY_TIMEOUT_MS to
 // act; otherwise the server auto-draws on their behalf.
+//
+// Reconnect-safe: the deadline is locked to the *current turn* (player
+// + turn-index + direction). If scheduleTurnTimeout is called while the
+// turn snapshot is unchanged (e.g. a refresh / reconnect re-broadcast)
+// we re-arm the underlying setTimeout to the REMAINING window instead of
+// minting a new full window. Without that, a player could refresh just
+// before the deadline to reset the 30-second budget indefinitely.
 function scheduleTurnTimeout(lobbyId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby || !lobby.game.started) {
     clearTurnTimer(lobbyId);
+    lobbyTurnSnapshots.delete(lobbyId);
     return;
   }
 
@@ -606,23 +650,67 @@ function scheduleTurnTimeout(lobbyId: string): void {
   // the player is removed and turn advances).
   if (!currentPlayer || currentPlayer.isAI || currentPlayer.disconnected) {
     clearTurnTimer(lobbyId);
+    // Don't drop the snapshot — when the disconnected player reconnects we
+    // want to resume their existing budget instead of granting a fresh one.
     return;
   }
 
-  // Bump the token so any prior fire that survives the clearTimeout race is a
-  // no-op when it eventually runs.
+  const snap = lobbyTurnSnapshots.get(lobbyId);
+  const sameTurn = !!snap
+    && snap.playerId === currentPlayer.id
+    && snap.turnIndex === lobby.game.turn
+    && snap.direction === lobby.game.direction;
+
+  const existing = turnTimers.get(lobbyId);
+  if (sameTurn && existing) {
+    // Re-arm the timer against the existing absolute deadline — preserves
+    // the wall-clock budget across reconnect / state-resync cycles.
+    const remaining = existing.deadline - Date.now();
+    const newToken = (turnTokens.get(lobbyId) || 0) + 1;
+    turnTokens.set(lobbyId, newToken);
+    clearTimeout(existing.timer);
+    const playerId = currentPlayer.id;
+    const fireDelay = Math.max(0, remaining);
+    const timer = setTimeout(() => {
+      if (turnTokens.get(lobbyId) !== newToken) return;
+      turnTimers.delete(lobbyId);
+      onTurnTimeout(lobbyId, playerId);
+    }, fireDelay);
+    turnTimers.set(lobbyId, {
+      timer,
+      deadline: existing.deadline,
+      token: newToken,
+      turnPlayerId: playerId,
+      turnSerial: existing.turnSerial,
+    });
+    return;
+  }
+
+  // Fresh turn → mint a brand-new deadline AND record the snapshot.
   const newToken = (turnTokens.get(lobbyId) || 0) + 1;
   turnTokens.set(lobbyId, newToken);
-
   clearTurnTimer(lobbyId);
 
   const deadline = Date.now() + PLAY_TIMEOUT_MS + PLAY_TIMEOUT_GRACE_MS;
+  const playerId = currentPlayer.id;
+  const serial = (existing ? existing.turnSerial : 0) + 1;
   const timer = setTimeout(() => {
     if (turnTokens.get(lobbyId) !== newToken) return;
     turnTimers.delete(lobbyId);
-    onTurnTimeout(lobbyId, currentPlayer.id);
+    onTurnTimeout(lobbyId, playerId);
   }, PLAY_TIMEOUT_MS + PLAY_TIMEOUT_GRACE_MS);
-  turnTimers.set(lobbyId, { timer, deadline, token: newToken });
+  turnTimers.set(lobbyId, {
+    timer,
+    deadline,
+    token: newToken,
+    turnPlayerId: playerId,
+    turnSerial: serial,
+  });
+  lobbyTurnSnapshots.set(lobbyId, {
+    playerId: currentPlayer.id,
+    turnIndex: lobby.game.turn,
+    direction: lobby.game.direction,
+  });
 }
 
 function getTurnDeadline(lobbyId: string): number | null {
@@ -1469,7 +1557,7 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             sLobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false, state: LobbyGameState.normal, drawingCount: 0, drawMode: 'chain' };
             startedLobbies.delete(lobbyId);
             clearAllAITimeouts(lobbyId);
-            clearTurnTimer(lobbyId);
+            resetTurnTimerState(lobbyId);
             return;
           }
           // Single opponent → standard surrender, opponent wins
@@ -1850,7 +1938,7 @@ function handleLeave(lobbyId: string, playerId: string): void {
     serverLog(`player leaved from ${lobby.id} :`, player);
 
     if (lobby.players.length === 0) {
-      clearTurnTimer(lobbyId);
+      resetTurnTimerState(lobbyId);
       lobbies.delete(lobbyId);
     }
   }

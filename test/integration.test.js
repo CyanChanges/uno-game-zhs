@@ -276,6 +276,49 @@ describe('Turn timeout broadcast (task #5)', () => {
     expect(after.turnDeadline).toBeGreaterThan(before)
     a.close(); b.close()
   })
+
+  // Security regression: a player must NOT be able to refresh / reconnect
+  // mid-turn to reset the auto-draw timer. The deadline is locked to the
+  // turn instance, not the live socket — a reconnect within the same
+  // turn must resume the existing budget, not mint a fresh one.
+  it('reconnect within the same turn does NOT reset the deadline', async () => {
+    const { a, b, startA } = await startTwoPlayerGame('timeout-refresh-exploit-' + Date.now())
+    const turnSocket = whoseTurn(startA, a, b)
+    const turnIsA = turnSocket === a
+    const turnPlayerId = turnIsA ? startA.id : startA.players.find(p => p.id !== startA.id).id
+
+    const initialDeadline = startA.turnDeadline
+    expect(typeof initialDeadline).toBe('number')
+
+    // Wait long enough that a "naive reset" would be obvious in the
+    // post-reconnect deadline (~250ms).
+    await new Promise(r => setTimeout(r, 300))
+
+    // Disconnect the active player and immediately reconnect with the
+    // same playerId — exactly what `location.reload()` triggers in the
+    // browser client.
+    turnSocket.close()
+    await new Promise(r => setTimeout(r, 100))
+
+    // Re-open the WS and send `reconnect` with the saved playerId.
+    const reborn = await openClient()
+    await reborn.next('init')
+    reborn.send({ action: 'reconnect', playerId: turnPlayerId })
+    // The reconnect handler emits init → players → start (game in flight).
+    await reborn.next('init')
+    const start2 = await reborn.next('start')
+
+    // The deadline shipped on the post-reconnect start frame must be
+    // within a tight window of the original (small clock drift from
+    // setTimeout re-arm is OK; minting a fresh PLAY_TIMEOUT_MS budget
+    // would put it ~PLAY_TIMEOUT_MS / 3 later).
+    expect(typeof start2.turnDeadline).toBe('number')
+    expect(start2.turnDeadline).toBeLessThanOrEqual(initialDeadline + 50)
+    expect(start2.turnDeadline).toBeGreaterThanOrEqual(initialDeadline - 50)
+
+    reborn.close()
+    if (turnIsA) b.close(); else a.close()
+  })
 })
 
 describe('Server validates dev events (task #8)', () => {

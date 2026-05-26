@@ -1762,11 +1762,11 @@ describe('UNO Client', () => {
     // Wait until the turn-timer span exists and has a number.
     await pageA.waitForFunction(() => {
       const el = document.getElementById('turn-timer')
-      return el && /\(\d+s\)/.test(el.textContent || '')
+      return el && /^\d+s$/.test((el.textContent || '').trim())
     }, { timeout: 5000 })
 
     const first = await pageA.$eval('#turn-timer', el => el.textContent)
-    const firstSec = Number(/\((\d+)s\)/.exec(first)[1])
+    const firstSec = Number(/(\d+)s/.exec(first)[1])
 
     // Wait long enough that even at the slowest browser-throttled rAF rate
     // the displayed seconds value should change. We poll for change rather
@@ -1778,7 +1778,7 @@ describe('UNO Client', () => {
     for (let i = 0; i < 30 && secondSec >= firstSec; i++) {
       await pageA.waitForTimeout(150)
       const second = await pageA.$eval('#turn-timer', el => el.textContent)
-      const m = /\((\d+)s\)/.exec(second)
+      const m = /(\d+)s/.exec(second)
       if (m) secondSec = Number(m[1])
     }
     expect(secondSec).toBeLessThan(firstSec)
@@ -2200,6 +2200,61 @@ describe('UNO Client', () => {
       if (!card) return false
       return card.getAttribute('data-color') === 'green' && card.getAttribute('data-type') === 'wild'
     }, { timeout: 5000 })
+
+    await pageA.close(); await pageB.close()
+  })
+
+  // Task: pressing the same digit twice plays the hovered card directly
+  // (without needing Enter). Useful for keyboard-only flows.
+  it('pressing the same digit twice plays the hovered card', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'kbddbl-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const turnPage = (await isMyTurn(pageA)) ? pageA : pageB
+
+    // Stage exactly one playable card so the hand index is predictable.
+    const top = await turnPage.evaluate(() => {
+      const card = document.querySelector('#discard-pile .card')
+      return { color: card.getAttribute('data-color'), type: card.getAttribute('data-type') }
+    })
+    await turnPage.evaluate(() => sendMessage({ action: 'dev_clear_hand' }))
+    await turnPage.waitForTimeout(200)
+    await turnPage.evaluate((color) => sendMessage({ action: 'dev_give_card', card: { color, type: '5' } }), top.color)
+    await turnPage.waitForFunction(() => document.querySelectorAll('#player-hand .card').length === 1)
+
+    // First Digit1 hovers the card; second Digit1 plays it.
+    await turnPage.keyboard.press('Digit1')
+    await turnPage.waitForFunction(() => {
+      const cards = document.querySelectorAll('#player-hand .card')
+      return cards[0] && cards[0].classList.contains('keyboard-hover')
+    })
+    await turnPage.keyboard.press('Digit1')
+    // After the second press the hand should empty out.
+    await turnPage.waitForTimeout(500)
+    const handAfter = await turnPage.evaluate(() => document.querySelectorAll('#player-hand .card').length)
+    expect(handAfter).toBe(0)
 
     await pageA.close(); await pageB.close()
   })

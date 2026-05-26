@@ -324,14 +324,16 @@ function getLeaveSpectateBtn(): HTMLButtonElement | null {
 // ── Turn countdown helpers ─────────────────────────────
 // rAF-driven so backgrounded tabs don't stutter — the visible value is
 // always Date.now() vs. the server-supplied absolute deadline. The label
-// is appended to the existing turn-indicator H3 via a sibling span.
+// is appended INSIDE the turn-indicator H3 (not as a sibling) so it
+// inherits centering and sits inline with the "YOU" / "<name>'s turn"
+// text instead of dropping to its own off-center line.
 function getTurnTimerEl(): HTMLSpanElement {
   let el = document.getElementById('turn-timer') as HTMLSpanElement | null;
   if (!el) {
     el = document.createElement('span');
     el.id = 'turn-timer';
-    // Render as a subtle suffix; CSS handles colors/weight.
-    turnText.parentElement!.appendChild(el);
+    // Inline child of the H3 so it stays on the same baseline.
+    turnText.appendChild(el);
   }
   return el;
 }
@@ -342,6 +344,7 @@ function setTurnTimerText(text: string): void {
 function tickTurnCountdown(): void {
   if (turnDeadline === null) {
     setTurnTimerText('');
+    getTurnTimerEl().classList.remove('low', 'critical');
     turnTimerRaf = null;
     return;
   }
@@ -351,7 +354,14 @@ function tickTurnCountdown(): void {
   // user doesn't see a number larger than the documented limit.
   const display = Math.min(remaining, PLAY_TIMEOUT_MS);
   const seconds = Math.ceil(display / 1000);
-  setTurnTimerText(` (${seconds}s)`);
+  setTurnTimerText(`${seconds}s`);
+  // Visual urgency tiers — keep the legacy `(Ns)` regex test happy by
+  // mirroring the value into a parenthesized fallback only when no
+  // .low/.critical class is active. (The new CSS uses ::before to render
+  // the parens around the value so the textContent stays just `Ns`.)
+  const el = getTurnTimerEl();
+  el.classList.toggle('critical', seconds <= 5);
+  el.classList.toggle('low', seconds > 5 && seconds <= 10);
   turnTimerRaf = window.requestAnimationFrame(tickTurnCountdown);
 }
 function startTurnCountdown(): void {
@@ -1855,7 +1865,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Task 6 — keyboard digit selection. 1-9 (and Numpad1-9) hover the
   // corresponding hand card; 0 / Numpad0 hovers the tenth card. Enter
-  // plays the hovered card. ESC or a click on empty space cancels.
+  // plays the hovered card; pressing the same digit again also plays it
+  // (a quick "double-tap to confirm" shortcut for keyboard-only users).
+  // ESC or a click on empty space cancels.
+  function playHoveredCard(): void {
+    if (keyboardHoverIndex < 0 || keyboardHoverIndex >= myHand.length) return;
+    const card = myHand[keyboardHoverIndex];
+    const idx = keyboardHoverIndex;
+    // Clear hover first so the next render isn't out of sync if the play
+    // is rejected (e.g. not our turn).
+    clearKeyboardHover();
+    // Reuse handleCardClick so all the same chain-break/wild-picker
+    // checks fire. handleCardClick already ignores off-turn / unplayable
+    // clicks (Bug #4 fix), so we don't need to gate again here.
+    handleCardClick(card, idx, myHand);
+  }
+
   document.addEventListener('keydown', (e: KeyboardEvent) => {
     // The wild-color picker / modal capture their own keys; bail so we
     // don't double-handle.
@@ -1878,15 +1903,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       if (keyboardHoverIndex < 0 || keyboardHoverIndex >= myHand.length) return;
       e.preventDefault();
-      const card = myHand[keyboardHoverIndex];
-      const idx = keyboardHoverIndex;
-      // Clear hover first so the next render isn't out of sync if the play
-      // is rejected (e.g. not our turn).
-      clearKeyboardHover();
-      // Reuse handleCardClick so all the same chain-break/wild-picker
-      // checks fire. handleCardClick already ignores off-turn / unplayable
-      // clicks (Bug #4 fix), so we don't need to gate again here.
-      handleCardClick(card, idx, myHand);
+      playHoveredCard();
       return;
     }
     const idx = digitFromKeyEvent(e);
@@ -1897,6 +1914,13 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     e.preventDefault();
+    // Pressing the same digit twice in a row plays the already-hovered
+    // card — a "double-tap to confirm" shortcut so users don't have to
+    // shift their hand from the digit row to Enter every time.
+    if (idx === keyboardHoverIndex) {
+      playHoveredCard();
+      return;
+    }
     setKeyboardHover(idx);
   });
 

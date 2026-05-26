@@ -1944,21 +1944,57 @@ footer a:hover {
     -webkit-user-select: text !important;
 }
 
-/* Per-turn countdown — appended to the turn-indicator label. The font and
-   color are deliberately subtle so the seconds-remaining doesn't dominate
-   the "YOU" / "<name>'s turn" message. */
+/* Per-turn countdown — appears inline at the right of the turn-indicator
+   text. Tabular-nums keeps the digit width stable so the label doesn't
+   shift as the countdown ticks. The base color matches the surrounding
+   white text but slightly lighter for a "monospace clock" feel; the
+   .low / .critical modifiers make the late-game warnings impossible
+   to miss. */
 #turn-timer {
-    margin-left: 8px;
-    font-size: 0.85em;
-    font-weight: 500;
-    color: #a0aec0;
+    margin-left: 14px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.18);
+    color: #fff;
+    font-size: 0.95em;
+    font-weight: 700;
     font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+    vertical-align: 0.05em;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+    transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 }
 
-#turn-indicator.my-turn #turn-timer {
-    /* On our own turn the countdown gets a slightly louder color so it's
-       clearly part of the call-to-action. */
-    color: #ffd166;
+#turn-timer:empty {
+    /* Hide the pill entirely when there's no number to show, otherwise an
+       empty round chip would float next to the title. */
+    display: none;
+}
+
+/* Yellow when the user has ten seconds or less. */
+#turn-timer.low {
+    background: rgba(255, 209, 102, 0.95);
+    color: #1e1e1e;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+
+/* Pulsing red at five seconds or less — clear "act now" signal. */
+#turn-timer.critical {
+    background: #dc2626;
+    color: #fff;
+    box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.35);
+    animation: turnTimerCritical 0.9s ease-in-out infinite;
+}
+
+@keyframes turnTimerCritical {
+    0%, 100% {
+        transform: scale(1);
+        box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.35);
+    }
+    50% {
+        transform: scale(1.08);
+        box-shadow: 0 0 0 6px rgba(220, 38, 38, 0.0);
+    }
 }
 
 /* Auto-draw timeout toast (lives below the connection toast at the same
