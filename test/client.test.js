@@ -1397,9 +1397,10 @@ describe('UNO Client', () => {
     })
     expect(aSees).toBe(true)
 
-    // Info title should describe both modes
-    const infoTitle = await pageA.$eval('#draw-mode-info', el => el.title)
-    expect(infoTitle).toContain('链式')
+    // Info title should describe both modes (now exposed via data-tooltip
+    // for the custom floating tooltip).
+    const tooltip = await pageA.$eval('#draw-mode-info', el => el.getAttribute('data-tooltip'))
+    expect(tooltip).toContain('链式')
 
     // Click info — should open rules modal
     await pageA.click('#draw-mode-info')
@@ -1910,6 +1911,207 @@ describe('UNO Client', () => {
     expect(offBadges).toBe(0)
 
     await pageA.close(); await pageB.close()
+  })
+
+  // Task: keyboard hover triggers the same transition as mouse hover —
+  // we don't recreate the DOM (which would skip the animation), we just
+  // toggle the `keyboard-hover` class on the existing card div. The
+  // assertion below confirms the same DOM element is reused before and
+  // after the digit press.
+  it('keyboard hover toggles class on the existing card element (no DOM swap)', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'kbdtrans-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const turnPage = (await isMyTurn(pageA)) ? pageA : pageB
+
+    // Tag the first card so we can verify the same DOM node survives the
+    // class toggle (instead of being replaced by a re-render).
+    await turnPage.evaluate(() => {
+      const first = document.querySelector('#player-hand .card')
+      if (first) first.dataset.testId = 'card-zero'
+    })
+    await turnPage.keyboard.press('Digit1')
+    await turnPage.waitForFunction(() => {
+      const el = document.querySelector('#player-hand .card[data-test-id="card-zero"]')
+      return el && el.classList.contains('keyboard-hover')
+    }, { timeout: 3000 })
+    // The data-test-id we tagged should still be there — proves the
+    // element wasn't recreated.
+    const stillTagged = await turnPage.$('#player-hand .card[data-test-id="card-zero"]')
+    expect(stillTagged).not.toBeNull()
+    await pageA.close(); await pageB.close()
+  })
+
+  // Task: the wild-color picker has a CSS animation when it opens and a
+  // separate one when it closes. Verify the `closing` class is applied
+  // during the close transition.
+  it('wild color picker plays a close animation', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+
+    const lobbyId = 'wildanim-' + Date.now()
+    await pageA.fill('#name', 'Alice')
+    await pageA.fill('#lobby-id', lobbyId)
+    await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob')
+    await pageB.fill('#lobby-id', lobbyId)
+    await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready')
+    await pageB.click('#ready')
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const turnPage = (await isMyTurn(pageA)) ? pageA : pageB
+
+    await turnPage.evaluate(() => sendMessage({ action: 'dev_clear_hand' }))
+    await turnPage.waitForTimeout(200)
+    await turnPage.evaluate(() => sendMessage({ action: 'dev_give_card', card: { type: 'wild' } }))
+    await turnPage.waitForFunction(() => document.querySelectorAll('#player-hand .card').length === 1)
+    await turnPage.evaluate(() => {
+      const card = document.querySelector('#player-hand .card')
+      card.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await turnPage.waitForFunction(() => {
+      const el = document.getElementById('wild-color-picker')
+      return el && el.style.display !== 'none'
+    })
+
+    // Trigger close via Esc and inspect the .closing class within the
+    // exit animation window. We poll because the class is added then
+    // removed asynchronously after animationend.
+    await turnPage.keyboard.press('Escape')
+    let sawClosing = false
+    for (let i = 0; i < 40; i++) {
+      const has = await turnPage.evaluate(() => {
+        const el = document.getElementById('wild-color-picker')
+        return el ? el.classList.contains('closing') : false
+      })
+      if (has) { sawClosing = true; break }
+      await turnPage.waitForTimeout(8)
+    }
+    expect(sawClosing).toBe(true)
+
+    // Eventually it settles to display:none.
+    await turnPage.waitForFunction(() => {
+      const el = document.getElementById('wild-color-picker')
+      return el && el.style.display === 'none'
+    }, { timeout: 5000 })
+
+    await pageA.close(); await pageB.close()
+  })
+
+  // Task: hovering an info icon (data-tooltip) shows the floating tooltip
+  // with the configured text, including newlines.
+  it('info icon shows a multi-line tooltip on hover/focus', { timeout: 20000 }, async () => {
+    const page = await browser.newPage()
+    await page.goto(BASE)
+    await page.waitForSelector('#name')
+
+    // Get into a lobby so the draw-mode info icon is visible.
+    const lobbyId = 'tip-' + Date.now()
+    await page.fill('#name', 'Alice')
+    await page.fill('#lobby-id', lobbyId)
+    await page.click('#join')
+    await page.waitForSelector('#players li')
+    await page.waitForSelector('#draw-mode-info')
+
+    // Focus the icon — mouseover via Playwright is fragile in headless
+    // builds; focusin works reliably and the tooltip implementation
+    // listens to both.
+    await page.focus('#draw-mode-info')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('tooltip')
+      return el && el.classList.contains('show')
+    }, { timeout: 3000 })
+    const text = await page.$eval('#tooltip', el => el.textContent || '')
+    expect(text).toContain('链式加牌')
+    expect(text).toContain('直接加牌')
+    // Multi-line: the source text used &#10; (\n) — verify it survived.
+    expect(text.split('\n').length).toBeGreaterThan(1)
+    // Verify CSS preserves newlines visually.
+    const ws = await page.$eval('#tooltip', el => getComputedStyle(el).whiteSpace)
+    expect(['pre-line', 'pre-wrap', 'pre']).toContain(ws)
+
+    // Esc should hide it.
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('tooltip')
+      return el && !el.classList.contains('show')
+    }, { timeout: 3000 })
+
+    await page.close()
+  })
+
+  // Task: clicking the draw-mode info icon opens the rules overlay and
+  // scrolls the highlighted section roughly into the visible center of
+  // the overlay (rather than leaving it at the top).
+  it('clicking draw-mode info scrolls the highlighted rule into view', { timeout: 20000 }, async () => {
+    const page = await browser.newPage()
+    await page.goto(BASE)
+    await page.waitForSelector('#name')
+
+    const lobbyId = 'scroll-' + Date.now()
+    await page.fill('#name', 'Alice')
+    await page.fill('#lobby-id', lobbyId)
+    await page.click('#join')
+    await page.waitForSelector('#players li')
+    await page.waitForSelector('#draw-mode-info')
+
+    await page.click('#draw-mode-info')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('rules-overlay')
+      return el && !el.classList.contains('hidden')
+    })
+    // Wait for the smooth scrollTo to settle (well under a second).
+    await page.waitForTimeout(700)
+
+    // The highlighted rules section's visible center should be within
+    // ~30% of the overlay's visible center — i.e. it's not stuck at the
+    // top edge.
+    const offsetRatio = await page.evaluate(() => {
+      const overlay = document.getElementById('rules-overlay')
+      const target = document.getElementById('rules-draw-mode-highlight')
+      if (!overlay || !target) return 1
+      const oRect = overlay.getBoundingClientRect()
+      const tRect = target.getBoundingClientRect()
+      const overlayCenter = oRect.top + oRect.height / 2
+      const targetCenter = tRect.top + tRect.height / 2
+      return Math.abs(targetCenter - overlayCenter) / oRect.height
+    })
+    expect(offsetRatio).toBeLessThan(0.3)
+
+    await page.close()
   })
 
   // Task #2: wild color picker is fully keyboard-driven.

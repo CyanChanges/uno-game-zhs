@@ -281,14 +281,23 @@ let turnTimerRaf: number | null = null;
 // playing the card or running into a hand-update naturally clears it.
 let keyboardHoverIndex = -1;
 function setKeyboardHover(idx: number): void {
+  if (keyboardHoverIndex === idx) return;
+  // In-place class toggle so the existing .card transition kicks in,
+  // giving the same lift/outline animation as the mouse hover. Recreating
+  // the DOM (as we used to do via updateHand) skipped the transition
+  // because the element was brand new.
+  const cards = playerHandDiv.querySelectorAll('.card');
+  if (keyboardHoverIndex >= 0 && keyboardHoverIndex < cards.length) {
+    cards[keyboardHoverIndex].classList.remove('keyboard-hover');
+  }
   keyboardHoverIndex = idx;
-  // Re-render the hand so .hovered is applied to the right card.
-  updateHand(myHand);
+  if (idx >= 0 && idx < cards.length) {
+    cards[idx].classList.add('keyboard-hover');
+  }
 }
 function clearKeyboardHover(): void {
   if (keyboardHoverIndex === -1) return;
-  keyboardHoverIndex = -1;
-  updateHand(myHand);
+  setKeyboardHover(-1);
 }
 // Map a keyboard digit (top-row or numpad) to a hand index using the
 // "1 → first card, 0 → tenth" convention. Returns -1 if the key isn't
@@ -1407,6 +1416,14 @@ function commitWildPick(color: string): void {
 function showWildColorPicker(card: Card): void {
   pendingWildCard = card;
   wildPickerScrollY = window.scrollY;
+  // Reset any in-flight closing animation so the entry animation re-runs
+  // cleanly when the picker is opened back-to-back.
+  wildColorPicker.classList.remove('closing');
+  // Forcing a reflow by reading offsetWidth lets the browser pick up the
+  // class change before we set display, otherwise the entry animation
+  // sometimes plays in the wrong direction during fast reopen sequences.
+  // eslint-disable-next-line no-unused-expressions
+  void wildColorPicker.offsetWidth;
   wildColorPicker.style.display = 'block';
   // Default to no keyboard hover — first digit / arrow press picks one.
   setWildKeyboardHover(-1);
@@ -1423,7 +1440,9 @@ function showWildColorPicker(card: Card): void {
 }
 
 function hideWildColorPicker(): void {
-  wildColorPicker.style.display = 'none';
+  // Already hidden — nothing to do (and avoids a duplicate animation cycle
+  // when both Esc and the click handler race).
+  if (wildColorPicker.style.display === 'none') return;
   pendingWildCard = null;
   setWildKeyboardHover(-1);
   if (detachWildKeyboard) {
@@ -1434,10 +1453,29 @@ function hideWildColorPicker(): void {
     window.removeEventListener('scroll', onWildPickerScroll);
     onWildPickerScroll = null;
   }
-  if (wildPickerScrollY) {
-    window.scrollTo({ top: wildPickerScrollY, behavior: 'smooth' });
-    wildPickerScrollY = 0;
-  }
+  // Trigger the exit animation; only after it finishes do we set
+  // display:none. animationend fires reliably for our keyframe and we
+  // also use a fallback timeout in case the user navigates away.
+  wildColorPicker.classList.add('closing');
+  const finish = () => {
+    wildColorPicker.classList.remove('closing');
+    wildColorPicker.style.display = 'none';
+    if (wildPickerScrollY) {
+      window.scrollTo({ top: wildPickerScrollY, behavior: 'smooth' });
+      wildPickerScrollY = 0;
+    }
+  };
+  let done = false;
+  const onEnd = () => {
+    if (done) return;
+    done = true;
+    wildColorPicker.removeEventListener('animationend', onEnd);
+    finish();
+  };
+  wildColorPicker.addEventListener('animationend', onEnd, { once: true });
+  // Safety net — if animationend doesn't fire (e.g. element was hidden by
+  // a parent transition) make sure we still settle the state.
+  setTimeout(onEnd, 250);
 }
 
 function attachWildKeyboard(): () => void {
@@ -1675,6 +1713,7 @@ if (surrenderBtn) {
 document.addEventListener('DOMContentLoaded', () => {
   connect();
   attemptRejoin();
+  installTooltipSystem();
 
   // Create form container and move elements
   const nameDiv = nameInput.parentNode!;
@@ -1805,6 +1844,11 @@ document.addEventListener('DOMContentLoaded', () => {
         el.classList.remove('highlight-section');
         void el.offsetWidth; // force reflow to restart animation
         el.classList.add('highlight-section');
+        // Center the highlighted section in the rules viewport. The rules
+        // dialog is a long scroll container; without this the highlight
+        // can fire while the user is scrolled to the top and the flash
+        // happens off-screen.
+        scrollHighlightedSectionIntoView(el);
       }
     }, 300);
   });
@@ -1876,6 +1920,131 @@ document.addEventListener('DOMContentLoaded', () => {
     clearKeyboardHover();
   });
 });
+
+// Center a highlighted rules-section in the rules-overlay scroll container.
+// The dialog is `position: fixed; overflow-y: auto`, so plain
+// scrollIntoView({block: 'center'}) on the inner element scrolls the page
+// behind the modal instead. We compute the offset against the overlay's
+// own scroll origin and animate via scrollTo.
+function scrollHighlightedSectionIntoView(target: HTMLElement): void {
+  const overlay = document.getElementById('rules-overlay');
+  if (!overlay) return;
+  // Wait one frame so the overlay's height is settled after the modalIn
+  // animation; otherwise getBoundingClientRect returns the pre-animated
+  // height and our top calculation lands a few px off.
+  requestAnimationFrame(() => {
+    const overlayRect = overlay.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    // Desired scrollTop puts the target's vertical center at the
+    // overlay's vertical center. Clamp to the legal range.
+    const desired =
+      overlay.scrollTop + (targetRect.top - overlayRect.top)
+      - (overlayRect.height - targetRect.height) / 2;
+    const max = overlay.scrollHeight - overlay.clientHeight;
+    overlay.scrollTo({ top: Math.max(0, Math.min(desired, max)), behavior: 'smooth' });
+  });
+}
+
+// Floating tooltip system. Any element with `data-tooltip` shows a
+// single shared tooltip element on mouseenter / focusin. We use a shared
+// node (rather than per-element ::after pseudo-elements) so:
+//   1. Newlines render correctly via white-space:pre-line on the actual
+//      element (CSS pseudo-elements only see the attribute string and
+//      treat \n as whitespace).
+//   2. The tooltip is `position: fixed` and never clipped by ancestor
+//      `overflow: hidden`.
+//   3. Keyboard focus support is uniform across icons.
+function installTooltipSystem(): void {
+  let tip = document.getElementById('tooltip') as HTMLDivElement | null;
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'tooltip';
+    tip.setAttribute('role', 'tooltip');
+    document.body.appendChild(tip);
+  }
+
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
+  let activeTarget: HTMLElement | null = null;
+
+  function show(target: HTMLElement): void {
+    const text = target.getAttribute('data-tooltip');
+    if (!text) return;
+    activeTarget = target;
+    tip!.textContent = text;
+    tip!.classList.add('show');
+    positionTooltip(target, tip!);
+  }
+
+  function hide(): void {
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = null;
+    activeTarget = null;
+    tip!.classList.remove('show');
+  }
+
+  // Use bubbling so the listener catches dynamically added elements (no
+  // need to re-attach when fragments mount). `mouseover` re-fires as the
+  // user moves between siblings, but the resolved target is checked
+  // against the previous active so we don't churn the DOM.
+  document.addEventListener('mouseover', (e) => {
+    const target = (e.target as HTMLElement | null)?.closest?.('[data-tooltip]') as HTMLElement | null;
+    if (!target) return;
+    if (target === activeTarget) return;
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    show(target);
+  });
+  document.addEventListener('mouseout', (e) => {
+    const target = (e.target as HTMLElement | null)?.closest?.('[data-tooltip]') as HTMLElement | null;
+    if (!target || target !== activeTarget) return;
+    // Brief grace so moving between adjacent annotated icons doesn't blink.
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = setTimeout(hide, 80);
+  });
+  document.addEventListener('focusin', (e) => {
+    const target = (e.target as HTMLElement | null)?.closest?.('[data-tooltip]') as HTMLElement | null;
+    if (!target) return;
+    show(target);
+  });
+  document.addEventListener('focusout', (e) => {
+    const target = (e.target as HTMLElement | null)?.closest?.('[data-tooltip]') as HTMLElement | null;
+    if (!target || target !== activeTarget) return;
+    hide();
+  });
+  // Hide on scroll (positions go stale) and on Escape.
+  window.addEventListener('scroll', hide, true);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && activeTarget) hide();
+  });
+}
+
+// Place the tooltip below the target by default, flipping above when the
+// page bottom would clip it. Horizontally centered on the target, clamped
+// to the viewport with an 8px gutter.
+function positionTooltip(target: HTMLElement, tip: HTMLDivElement): void {
+  const targetRect = target.getBoundingClientRect();
+  // Force a layout pass so we read the post-text size, not the previous
+  // tooltip's dimensions.
+  tip.style.left = '0px';
+  tip.style.top = '0px';
+  const tipRect = tip.getBoundingClientRect();
+
+  const gap = 8;
+  const margin = 8;
+
+  let left = targetRect.left + (targetRect.width / 2) - (tipRect.width / 2);
+  left = Math.max(margin, Math.min(left, window.innerWidth - tipRect.width - margin));
+
+  let top = targetRect.bottom + gap;
+  if (top + tipRect.height + margin > window.innerHeight) {
+    // Flip above the target.
+    top = targetRect.top - tipRect.height - gap;
+    // If even the top doesn't fit (target is huge), pin to the viewport.
+    if (top < margin) top = margin;
+  }
+
+  tip.style.left = left + 'px';
+  tip.style.top = top + 'px';
+}
 
 function copyLobbyId(): void {
   const lobbyIdSpan = document.getElementById('current-lobby-id')!;
