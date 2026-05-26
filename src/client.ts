@@ -94,11 +94,14 @@ const pendingWrites = new Map<string, string | null>();
 
 const store = {
   get(k: string): string | null {
+    // Slot-scoped reads only. The legacy plain-key fallback we used to
+    // do here was a footgun: a tab whose own slot key was empty would
+    // surface whatever the most-recent tab had typed (because Chrome
+    // never cleans up the now-stale plain key). After closing the
+    // browser and opening a fresh tab the user would see *some other
+    // slot's* name pre-filled, which is the bug we're fixing.
     return sessionStorage.getItem(k)
-      ?? (tabSlot ? localStorage.getItem(slotKey(k)) : null)
-      // Legacy fallback for users upgrading from a pre-slot build. Only ever
-      // read, never written, so concurrent tabs cannot stomp on each other.
-      ?? localStorage.getItem(k);
+      ?? (tabSlot ? localStorage.getItem(slotKey(k)) : null);
   },
   set(k: string, v: string): void {
     sessionStorage.setItem(k, v);
@@ -108,10 +111,26 @@ const store = {
   remove(k: string): void {
     if (tabSlot) localStorage.removeItem(slotKey(k));
     else pendingWrites.set(k, null);
+    // Strip the legacy plain key too — older builds wrote it directly
+    // and we want any leftover data gone for good.
     localStorage.removeItem(k);
     sessionStorage.removeItem(k);
   },
 };
+
+// One-shot migration on script boot: nuke any leftover unscoped uno* keys
+// that pre-slot-aware builds wrote, so they can't bleed back through the
+// legacy fallback removed above. After this runs once per origin, every
+// per-tab slot gets a clean state.
+(function purgeLegacyPlainKeys() {
+  const LEGACY_KEYS = ['unoPlayerName', 'unoLobbyId', 'unoPlayerId',
+    'unoInLobby', 'unoInGame', 'unoLeftLobby', 'unoCardLayout'];
+  for (const k of LEGACY_KEYS) {
+    // localStorage.removeItem is a no-op if the key isn't present, so
+    // unconditional cleanup costs nothing measurable.
+    localStorage.removeItem(k);
+  }
+})();
 
 // ── BroadcastChannel slot negotiation ────────────────────
 // Distributed (no central host): every tab heartbeats its own slot and listens
@@ -144,11 +163,36 @@ function pickFreeSlot(): number {
   return s;
 }
 
-function claimSlot(slot: number): void {
+// Track how this tab acquired its slot. `restored` means same-tab session
+// continuation (sessionStorage survived a refresh), so any leftover state
+// in `unoXxx-${slot}` localStorage belongs to *us*. `elected` means we
+// negotiated for a free slot via the BroadcastChannel — that slot was
+// either always free or freed by another tab closing, and any leftover
+// state under that slot belongs to whoever was there before us, NOT to
+// this new tab. We must NOT auto-reconnect with a stranger's identity.
+type SlotOrigin = 'restored' | 'elected';
+let slotOrigin: SlotOrigin = 'elected';
+
+function claimSlot(slot: number, origin: SlotOrigin): void {
   tabSlot = slot;
+  slotOrigin = origin;
   sessionStorage.setItem('unoSlot', String(slot));
   knownSlots.set(slot, { tabId: TAB_ID, lastSeen: Date.now() });
   ch.postMessage({ type: 'heartbeat', slot, tabId: TAB_ID });
+
+  // Brand-new tab in a recycled slot — wipe the previous occupant's
+  // SERVER-SIDE identity so we don't impersonate them on the next WS
+  // connect. The user's typed name and lobby id are intentionally kept:
+  // they're convenience defaults, not identity, so a fresh tab pre-fills
+  // with whatever the closed tab last typed (matching the user's mental
+  // model of "this slot picked up where the last tab left off"). Auto-
+  // reconnect is gated on `unoPlayerId` alone; clearing that is enough
+  // to force a clean new-client handshake.
+  if (origin === 'elected') {
+    const drop = ['unoPlayerId', 'unoInLobby', 'unoInGame', 'unoLeftLobby'];
+    for (const k of drop) localStorage.removeItem(slotKey(k));
+  }
+
   // Flush any writes that happened during the election window.
   for (const [k, v] of pendingWrites) {
     if (v === null) localStorage.removeItem(slotKey(k));
@@ -164,7 +208,7 @@ function runElection(): void {
   electionTimer = setTimeout(() => {
     electionTimer = null;
     if (tabSlot !== 0) return; // already claimed during the wait window
-    claimSlot(pickFreeSlot());
+    claimSlot(pickFreeSlot(), 'elected');
   }, ELECTION_MS);
 }
 
@@ -176,6 +220,10 @@ ch.onmessage = (e: MessageEvent) => {
     // Same-slot collision: keep the tab with the lexicographically smaller id.
     if (d.slot === tabSlot && d.tabId !== TAB_ID && d.tabId < TAB_ID) {
       tabSlot = 0;
+      // Drop this slot's session marker so the upcoming election doesn't
+      // think it's a restore. The collision means a peer was already
+      // claiming our slot — we're effectively a fresh tab from this
+      // point on, identity-wise.
       sessionStorage.removeItem('unoSlot');
       runElection();
     }
@@ -193,7 +241,7 @@ ch.onmessageerror = () => { /* ignore */ };
 (() => {
   const stored = Number(sessionStorage.getItem('unoSlot'));
   if (Number.isFinite(stored) && stored > 0) {
-    claimSlot(stored);
+    claimSlot(stored, 'restored');
     // Probe so that, if another tab grabbed our slot while we were reloading,
     // the same-slot conflict resolution kicks in promptly.
     ch.postMessage({ type: 'who', tabId: TAB_ID });
