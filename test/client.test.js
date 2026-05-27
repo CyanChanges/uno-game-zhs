@@ -1439,13 +1439,61 @@ describe('UNO Client', () => {
     await pageB.close()
   })
 
+  // Regression: "browser reopen, no other tabs alive" must land on slot 1.
+  // Scenario:
+  //   1. Open tab A → slot 1 (no name typed)
+  //   2. Open tab B, type "22" → slot 2
+  //   3. Close tab B (only tab A alive)
+  //   4. Close tab A (no live tabs at all)
+  //   5. Open a single new tab → previously this would resume on slot 2
+  //      because Chrome restored sessionStorage.unoSlot, and the input
+  //      pre-filled with "22" — wrong; the new tab has no neighbor and
+  //      should land on slot 1 with whatever slot 1 had typed (empty).
+  it('lone tab opened after a full close lands on slot 1, not the highest used slot', { timeout: 30000 }, async () => {
+    const ctx = await browser.newContext()
+
+    async function openTab() {
+      const p = await ctx.newPage()
+      await p.goto(BASE)
+      await p.waitForSelector('#name')
+      await p.waitForFunction(() => Number(sessionStorage.getItem('unoSlot')) > 0, { timeout: 5000 })
+      return p
+    }
+
+    // 1-2: open A and B in parallel-ish. B types its name.
+    const a = await openTab()
+    const b = await openTab()
+    await b.fill('#name', '22')
+    await b.locator('#name').press('Tab')
+    const slotA = await a.evaluate(() => Number(sessionStorage.getItem('unoSlot')))
+    const slotB = await b.evaluate(() => Number(sessionStorage.getItem('unoSlot')))
+    expect(slotA).toBe(1)
+    expect(slotB).toBe(2)
+
+    // 3-4: close both tabs, wait past STALE_MS so heartbeats prune.
+    await b.close()
+    await a.close()
+    await new Promise(r => setTimeout(r, 4500))
+
+    // 5: open a single new tab. With no live peers, the election should
+    // settle on slot 1 — NOT resume slot 2 just because Chrome carried
+    // sessionStorage.unoSlot through the close.
+    const lone = await openTab()
+    const slot = await lone.evaluate(() => Number(sessionStorage.getItem('unoSlot')))
+    expect(slot).toBe(1)
+    // Input must NOT show '22' (that was slot 2's value).
+    const name = await lone.locator('#name').inputValue()
+    expect(name).not.toBe('22')
+
+    await lone.close()
+    await ctx.close()
+  })
+
   // Multi-tab name pre-fill behavior: each open tab keeps its OWN typed
-  // name. After all tabs close, a fresh tab in a recycled slot DOES
-  // pre-fill with whatever the previous occupant of that slot last
-  // typed — name/lobby are convenience defaults, not identity. The
-  // identity bits (playerId/inLobby/inGame) are cleared on a
-  // recycled-slot election so the new tab connects as a brand-new
-  // client; that's covered by the recycled-slot regression below.
+  // name. After all tabs close, opening fresh tabs in sequence (NOT
+  // simultaneous restore) recovers each slot's typed name in any order
+  // because each new tab's election sees the previous one's heartbeat
+  // and picks the next free slot.
   it('multi-tab names stay isolated and recycled slots restore typed name', { timeout: 30000 }, async () => {
     const ctx = await browser.newContext()
     const NAMES = ['11', '22', '33']
@@ -1458,8 +1506,7 @@ describe('UNO Client', () => {
       return p
     }
 
-    // Round 1: open three tabs, fill different names. All three are
-    // alive simultaneously, so each one must keep its own value.
+    // Round 1: three tabs, three names. All alive simultaneously.
     const round1 = []
     for (let i = 0; i < 3; i++) {
       const p = await openTab()
@@ -1472,15 +1519,13 @@ describe('UNO Client', () => {
       expect(v).toBe(NAMES[i])
     }
 
-    // Close all three. Wait past STALE_MS so the next tabs' elections
-    // don't see leftover heartbeats.
+    // Close all three. Wait past STALE_MS so heartbeats prune.
     for (const p of round1) await p.close()
     await new Promise(r => setTimeout(r, 4500))
 
-    // Round 2: reopen three tabs. Each one's election picks one of the
-    // freed slots; the input pre-fills with that slot's last typed
-    // name. Collectively, the three new tabs should resurface the
-    // three original names exactly once each.
+    // Round 2: open three new tabs in sequence. Each lands on the
+    // lowest free slot, which is filled with the matching original
+    // name. Collectively the three new tabs recover all three names.
     const round2 = []
     for (let i = 0; i < 3; i++) round2.push(await openTab())
     const restored = []
@@ -1489,6 +1534,93 @@ describe('UNO Client', () => {
     expect(new Set(restored).size).toBe(3)
 
     for (const p of round2) await p.close()
+    await ctx.close()
+  })
+
+  // Browser-reopen scenario (session restore): three tabs were open at
+  // close time, the user reopens with "continue where you left off",
+  // and Chrome restores all three sessionStorage `unoSlot` markers AT
+  // THE SAME TIME. Each tab's input must pre-fill with the name that
+  // belonged to its own slot — no slot/name shuffling. Without the
+  // election-window peer-preference exchange this currently fails
+  // because all three race to slot 1 and end up assigned via
+  // collision tiebreakers (TAB_ID lex order), which scrambles the
+  // pairing.
+  it('parallel-booted restored tabs each keep their own (slot, name)', { timeout: 30000 }, async () => {
+    const ctx = await browser.newContext()
+    const NAMES = ['11', '22', '33']
+
+    // First open three tabs sequentially so each gets its own slot,
+    // type its name, and seed sessionStorage.unoSlot with the right
+    // slot for that tab. After this, every tab has been associated
+    // with one of NAMES via its localStorage entry.
+    const round1 = []
+    for (let i = 0; i < 3; i++) {
+      const p = await ctx.newPage()
+      await p.goto(BASE)
+      await p.waitForFunction(() => Number(sessionStorage.getItem('unoSlot')) > 0, { timeout: 5000 })
+      await p.fill('#name', NAMES[i])
+      await p.locator('#name').press('Tab')
+      round1.push(p)
+    }
+
+    // Sanity: each tab sees its own name now.
+    for (let i = 0; i < 3; i++) {
+      expect(await round1[i].locator('#name').inputValue()).toBe(NAMES[i])
+    }
+
+    // Capture each tab's slot before close so we can correlate after
+    // restore. The relationship "slot N → NAMES[N-1]" depends on the
+    // election order above; record what actually happened.
+    const slotByName = {}
+    for (let i = 0; i < 3; i++) {
+      const slot = await round1[i].evaluate(() => Number(sessionStorage.getItem('unoSlot')))
+      slotByName[NAMES[i]] = slot
+    }
+
+    // Close all three. Wait past STALE_MS so the peer table is empty.
+    for (const p of round1) await p.close()
+    await new Promise(r => setTimeout(r, 4500))
+
+    // Simulate a parallel session restore: prepare three pages that
+    // each pre-set sessionStorage.unoSlot via a navigation hook BEFORE
+    // the script runs, mimicking what Chrome does on "continue where
+    // you left off". Then load them in parallel so all three are in
+    // the election window simultaneously — that's where the previous
+    // implementation would race to slot 1 and shuffle.
+    const restorePages = await Promise.all(NAMES.map(async (name) => {
+      const p = await ctx.newPage()
+      const slot = slotByName[name]
+      // Pre-set sessionStorage by visiting a blank page on the same
+      // origin first, then setting the marker, then navigating into
+      // the app — the slot-restore boot path will see the marker.
+      await p.goto(BASE + '/')
+      await p.evaluate((s) => sessionStorage.setItem('unoSlot', String(s)), slot)
+      // Reload so the boot script reads the seeded sessionStorage.
+      await p.reload()
+      return p
+    }))
+
+    // Wait until each tab finishes its election and claims a slot.
+    for (const p of restorePages) {
+      await p.waitForFunction(() => Number(sessionStorage.getItem('unoSlot')) > 0, { timeout: 8000 })
+      // Election needs ~250ms; give a generous extra buffer for the
+      // pre-fill from `slotReady.then(...)` to land.
+      await p.waitForTimeout(900)
+    }
+
+    // Each tab's sessionStorage.unoSlot should match what it had
+    // before close, AND the input should match the name that was
+    // typed under that slot. No pair-swapping.
+    for (let i = 0; i < 3; i++) {
+      const expectedSlot = slotByName[NAMES[i]]
+      const actualSlot = await restorePages[i].evaluate(() => Number(sessionStorage.getItem('unoSlot')))
+      const actualName = await restorePages[i].locator('#name').inputValue()
+      expect(actualSlot).toBe(expectedSlot)
+      expect(actualName).toBe(NAMES[i])
+    }
+
+    for (const p of restorePages) await p.close()
     await ctx.close()
   })
 
@@ -2364,6 +2496,120 @@ describe('UNO Client', () => {
     expect(handAfter).toBe(0)
 
     await pageA.close(); await pageB.close()
+  })
+
+  // User-reported scenario: open 3 tabs, type 11 / 22 / 33, close all,
+  // then reopen 3 tabs sequentially — they should restore in slot order
+  // (1 → "11", 2 → "22", 3 → "33"). The existing `multi-tab names`
+  // test asserts set equality only; this one pins down the order.
+  it('sequential reopen restores names in 11/22/33 order', { timeout: 30000 }, async () => {
+    const ctx = await browser.newContext()
+    const NAMES = ['11', '22', '33']
+
+    async function openTab() {
+      const p = await ctx.newPage()
+      await p.goto(BASE)
+      await p.waitForFunction(() => Number(sessionStorage.getItem('unoSlot')) > 0, { timeout: 5000 })
+      // Wait a beat past the election window so onopen's pre-fill lands.
+      await p.waitForTimeout(800)
+      return p
+    }
+
+    // Round 1: three tabs, three names, all alive at once. Each tab's
+    // own input must show its own name.
+    const round1 = []
+    for (let i = 0; i < 3; i++) {
+      const p = await openTab()
+      await p.fill('#name', NAMES[i])
+      await p.locator('#name').press('Tab')
+      round1.push(p)
+    }
+    for (let i = 0; i < 3; i++) {
+      expect(await round1[i].locator('#name').inputValue()).toBe(NAMES[i])
+    }
+
+    // Close all three. Wait past STALE_MS so heartbeats prune.
+    for (const p of round1) await p.close()
+    await new Promise(r => setTimeout(r, 4500))
+
+    // Round 2: open three tabs sequentially. The Nth tab should land
+    // on slot N (since slot N-1 is heartbeating from the previous tab)
+    // and pre-fill with NAMES[N-1].
+    const restored = []
+    for (let i = 0; i < 3; i++) {
+      const p = await openTab()
+      const slot = await p.evaluate(() => Number(sessionStorage.getItem('unoSlot')))
+      const name = await p.locator('#name').inputValue()
+      restored.push({ slot, name })
+    }
+    expect(restored).toEqual([
+      { slot: 1, name: '11' },
+      { slot: 2, name: '22' },
+      { slot: 3, name: '33' },
+    ])
+
+    await ctx.close()
+  })
+
+  // Same scenario but the three tabs open within the same election
+  // window (~250ms). If the user clicks "open new tab" three times in
+  // quick succession, none of them have heartbeated yet when the
+  // others start their election — they all race to slot 1 and the
+  // collision tiebreaker decides which goes where, scrambling the
+  // pairing. With the `who`-replies-with-stored-preference fix in
+  // place, each tab sees the others' intentions during the election
+  // window and they settle deterministically.
+  it('rapid-fire reopen still restores names in slot order', { timeout: 30000 }, async () => {
+    const ctx = await browser.newContext()
+    const NAMES = ['11', '22', '33']
+
+    // Round 1: three tabs sequentially, type names.
+    const round1 = []
+    for (let i = 0; i < 3; i++) {
+      const p = await ctx.newPage()
+      await p.goto(BASE)
+      await p.waitForFunction(() => Number(sessionStorage.getItem('unoSlot')) > 0, { timeout: 5000 })
+      await p.waitForTimeout(400)
+      await p.fill('#name', NAMES[i])
+      await p.locator('#name').press('Tab')
+      round1.push(p)
+    }
+    for (const p of round1) await p.close()
+    await new Promise(r => setTimeout(r, 4500))
+
+    // Round 2: fire all three opens simultaneously — all three tabs
+    // are in their election window at once. Even more aggressive:
+    // launch the goto calls BEFORE any of them finishes loading.
+    const round2Promises = NAMES.map(async () => {
+      const p = await ctx.newPage()
+      // Don't await goto — let all three navigate in parallel.
+      const navP = p.goto(BASE)
+      return { p, navP }
+    })
+    const round2Raw = await Promise.all(round2Promises)
+    // Now resolve the navigations and wait for slot assignment.
+    for (const { p, navP } of round2Raw) {
+      await navP
+      await p.waitForFunction(() => Number(sessionStorage.getItem('unoSlot')) > 0, { timeout: 5000 })
+      await p.waitForTimeout(800)
+    }
+    const round2 = round2Raw.map(r => r.p)
+
+    const result = []
+    for (const p of round2) {
+      const slot = await p.evaluate(() => Number(sessionStorage.getItem('unoSlot')))
+      const name = await p.locator('#name').inputValue()
+      result.push({ slot, name })
+    }
+    // Each slot should match the name that was originally typed there,
+    // regardless of which tab finished electing first.
+    const bySlot = new Map(result.map(r => [r.slot, r.name]))
+    expect(bySlot.get(1)).toBe('11')
+    expect(bySlot.get(2)).toBe('22')
+    expect(bySlot.get(3)).toBe('33')
+    expect(bySlot.size).toBe(3)
+
+    await ctx.close()
   })
 
 })

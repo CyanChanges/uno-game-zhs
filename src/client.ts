@@ -78,6 +78,31 @@ let tabSlot = 0;
 // Stable per-tab identifier used to resolve same-slot conflicts deterministically.
 const TAB_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
+// Hoisted log helpers so the slot-election code (runs immediately on
+// script load) can use them. The full clientLog/clientWarn definitions
+// later in the file just rebind to these.
+const _CLIENT_PREFIX = '[client]';
+function _clientLog(msg: string, ...args: unknown[]): void {
+  console.log(`${_CLIENT_PREFIX} ${msg}`, ...args);
+}
+function _clientWarn(msg: string, ...args: unknown[]): void {
+  console.warn(`${_CLIENT_PREFIX} ${msg}`, ...args);
+}
+
+// Snapshot of currently-known peer slots (for log lines). The actual map
+// is defined further down; we expose a reader that's safe to call before
+// it's initialized — it just returns an empty array.
+function knownSlotsSnapshot(): number[] {
+  // `knownSlots` is hoisted as a `const` initialised below; reading it
+  // before that line would throw a TDZ. The slot code only logs AFTER
+  // the map is set up, so this guard is defensive belt-and-suspenders.
+  try {
+    return [...knownSlots.keys()].sort((a, b) => a - b);
+  } catch {
+    return [];
+  }
+}
+
 function slotKey(k: string): string { return `${k}-${tabSlot || 1}`; }
 
 // Resolves once this tab knows its slot. Code that loads UI state from
@@ -146,20 +171,48 @@ const STALE_MS = 4000;
 const ELECTION_MS = 250;
 interface SlotInfo { tabId: string; lastSeen: number }
 const knownSlots = new Map<number, SlotInfo>();
+// Set to true when we hear ANY `intent` from another (not-yet-claimed)
+// tab during the election window. Used to disambiguate "I'm a lone tab,
+// fall back to slot 1" from "I'm part of a parallel-restore wave, keep
+// my stored slot". Reset is unnecessary — the boot IIFE only runs once
+// per page load.
+let peerIntentSeen = false;
 let electionTimer: ReturnType<typeof setTimeout> | null = null;
 
 function pruneStaleSlots(): void {
   const now = Date.now();
+  const dropped: number[] = [];
   for (const [s, info] of knownSlots) {
     if (info.tabId === TAB_ID) continue;
-    if (now - info.lastSeen > STALE_MS) knownSlots.delete(s);
+    if (now - info.lastSeen > STALE_MS) {
+      knownSlots.delete(s);
+      dropped.push(s);
+    }
+  }
+  if (dropped.length) {
+    _clientLog(`pruneStaleSlots dropped=[${dropped.join(',')}] remaining=[${knownSlotsSnapshot().join(',')}]`);
   }
 }
 
+// Pick the lowest-numbered slot not currently held by a live peer. Always
+// starts the search at 1 so a freshly-opened tab with no neighbors lands
+// at slot 1 even if `sessionStorage.unoSlot` carried a higher number from
+// a previous browser session. The previous "session-restore shortcut"
+// went straight to the stored slot and pre-filled with that slot's last
+// typed name/lobby — confusing on a clean browser reopen.
+//
+// Note: leftover `unoPlayerId-N` in localStorage from a closed tab does
+// NOT reserve the slot. The closed tab's sessionStorage is gone, so it
+// can't F5 back into "its" slot — the identity is dead. A new tab
+// claiming the slot via `'elected'` correctly wipes it (see claimSlot)
+// so the new tab doesn't impersonate the old user. The only case where
+// we want to keep the slot+identity is F5 within the same tab, which
+// goes through the `'restored'` path and isn't gated by pickFreeSlot.
 function pickFreeSlot(): number {
   pruneStaleSlots();
   let s = 1;
   while (knownSlots.has(s)) s++;
+  _clientLog(`pickFreeSlot known=[${knownSlotsSnapshot().join(',')}] picked=${s}`);
   return s;
 }
 
@@ -174,6 +227,7 @@ type SlotOrigin = 'restored' | 'elected';
 let slotOrigin: SlotOrigin = 'elected';
 
 function claimSlot(slot: number, origin: SlotOrigin): void {
+  _clientLog(`claimSlot slot=${slot} origin=${origin} tabId=${TAB_ID.slice(0, 6)} known=[${knownSlotsSnapshot().join(',')}]`);
   tabSlot = slot;
   slotOrigin = origin;
   sessionStorage.setItem('unoSlot', String(slot));
@@ -216,9 +270,20 @@ ch.onmessage = (e: MessageEvent) => {
   const d = e.data;
   if (!d || typeof d !== 'object') return;
   if (d.type === 'heartbeat' && typeof d.slot === 'number' && typeof d.tabId === 'string') {
-    knownSlots.set(d.slot, { tabId: d.tabId, lastSeen: Date.now() });
+    const wasKnown = knownSlots.has(d.slot);
+    const prev = knownSlots.get(d.slot);
+    // Only overwrite if this is a fresher signal — guards against an
+    // older heartbeat from a closed tab arriving after a `bye` that
+    // freed the slot. Otherwise we'd "resurrect" a stale entry.
+    if (!prev || prev.tabId === d.tabId || prev.lastSeen < Date.now()) {
+      knownSlots.set(d.slot, { tabId: d.tabId, lastSeen: Date.now() });
+    }
+    if (!wasKnown) {
+      _clientLog(`peer-up slot=${d.slot} tabId=${String(d.tabId).slice(0, 6)} known=[${knownSlotsSnapshot().join(',')}]`);
+    }
     // Same-slot collision: keep the tab with the lexicographically smaller id.
     if (d.slot === tabSlot && d.tabId !== TAB_ID && d.tabId < TAB_ID) {
+      _clientLog(`collision on slot=${tabSlot}, peer wins (peerTabId=${String(d.tabId).slice(0, 6)} < ours=${TAB_ID.slice(0, 6)}) — re-electing`);
       tabSlot = 0;
       // Drop this slot's session marker so the upcoming election doesn't
       // think it's a restore. The collision means a peer was already
@@ -228,26 +293,128 @@ ch.onmessage = (e: MessageEvent) => {
       runElection();
     }
   } else if (d.type === 'who') {
-    if (tabSlot) ch.postMessage({ type: 'heartbeat', slot: tabSlot, tabId: TAB_ID });
+    // Reply with our claimed slot if we have one. While our election is
+    // still in flight (tabSlot=0), reply with our STORED preference so
+    // simultaneously-booting peers can see each other's intentions and
+    // each settle on their own previous slot rather than racing to
+    // slot 1 and shuffling via collision detection. This is what makes
+    // a multi-tab browser-reopen restore the original (slot, name)
+    // pairing instead of randomly swapping them.
+    if (tabSlot) {
+      ch.postMessage({ type: 'heartbeat', slot: tabSlot, tabId: TAB_ID });
+    } else {
+      const pending = Number(sessionStorage.getItem('unoSlot'));
+      if (Number.isFinite(pending) && pending > 0) {
+        // Tag the gossip with `intent: true` so a same-slot conflict
+        // between two not-yet-claimed tabs can be resolved by TAB_ID
+        // tiebreak in the election handler below.
+        ch.postMessage({ type: 'intent', slot: pending, tabId: TAB_ID });
+      }
+    }
+  } else if (d.type === 'intent' && typeof d.slot === 'number' && typeof d.tabId === 'string') {
+    // Another tab is in its election window and wants this slot. Use it
+    // for tiebreak only — DO NOT add to `knownSlots`. If we did, the
+    // surviving tab would think the slot is taken by an unclaimed peer
+    // and fall back, leaving slot 1 unused. The peer's actual claim
+    // (heartbeat after their election fires) will land in knownSlots
+    // through the heartbeat handler.
+    //
+    // We also separately track `peerIntentSeen` so the boot decision
+    // can tell "I'm not alone" from "I'm alone, fall back to slot 1".
+    // Without this, three tabs restored in parallel each see only
+    // each other's `intent` (not heartbeats), so each one's election
+    // believes it's a lone tab and falls back to slot 1 — collisions
+    // resolve to a single slot 1 winner with the others scrambled.
+    if (d.tabId !== TAB_ID) {
+      peerIntentSeen = true;
+    }
+    const ourIntent = Number(sessionStorage.getItem('unoSlot'));
+    if (tabSlot === 0
+      && Number.isFinite(ourIntent) && ourIntent > 0
+      && ourIntent === d.slot
+      && d.tabId !== TAB_ID
+      && d.tabId < TAB_ID) {
+      _clientLog(`yielding stored slot=${ourIntent} to peer tabId=${String(d.tabId).slice(0, 6)} (< ours=${TAB_ID.slice(0, 6)})`);
+      sessionStorage.removeItem('unoSlot');
+    }
   } else if (d.type === 'bye' && typeof d.slot === 'number' && typeof d.tabId === 'string') {
     const cur = knownSlots.get(d.slot);
-    if (cur && cur.tabId === d.tabId) knownSlots.delete(d.slot);
+    if (cur && cur.tabId === d.tabId) {
+      knownSlots.delete(d.slot);
+      _clientLog(`peer-bye slot=${d.slot} known=[${knownSlotsSnapshot().join(',')}]`);
+    }
   }
 };
 
 ch.onmessageerror = () => { /* ignore */ };
 
-// Boot: reuse the slot remembered for this tab (survives F5), else negotiate.
+// Boot: always negotiate via the BroadcastChannel. We don't take the
+// "session-restore shortcut" of grabbing the stored slot directly,
+// because Chrome restores `sessionStorage.unoSlot` for ALL recovered
+// tabs — including ones where the user just wants a clean start after
+// a full browser reopen. Instead we listen for `who` responses for
+// ELECTION_MS and decide based on what we hear:
+//   * If we have a stored slot AND no live peer claims it during the
+//     election window, keep that slot (deterministic restore — multi-
+//     tab browser reopen lands each restored tab back on its own slot
+//     with its own typed name). The same rule covers F5: a tab
+//     mid-game has both sessionStorage.unoSlot and unoPlayerId-N
+//     under that slot, and it just stays put.
+//   * Otherwise pick the lowest free slot starting at 1. A lone tab
+//     opened after every other tab is gone lands on slot 1 (no peer
+//     responses, the stored slot may not be 1, but the rule "lowest
+//     free wins" trumps the stored preference when there's nobody
+//     else around) — except: if the stored slot itself is 1, that's
+//     identical to the fresh-start slot anyway. The override only
+//     kicks in for stored slots > 1 with no peers visible.
 (() => {
   const stored = Number(sessionStorage.getItem('unoSlot'));
-  if (Number.isFinite(stored) && stored > 0) {
-    claimSlot(stored, 'restored');
-    // Probe so that, if another tab grabbed our slot while we were reloading,
-    // the same-slot conflict resolution kicks in promptly.
-    ch.postMessage({ type: 'who', tabId: TAB_ID });
-  } else {
-    runElection();
+  const haveStored = Number.isFinite(stored) && stored > 0;
+  const hasIdentityForStored = haveStored
+    && !!localStorage.getItem(`unoPlayerId-${stored}`);
+
+  _clientLog(`boot tabId=${TAB_ID.slice(0, 6)} stored=${haveStored ? stored : 'none'} hasIdentity=${hasIdentityForStored}`);
+
+  // Probe for live peers and announce our intent in the same go.
+  // Posting `intent` upfront lets simultaneously-booting peers spot a
+  // same-slot collision before either has claimed, and the smaller-
+  // TAB_ID tab wins the tiebreak (see the `intent` handler).
+  ch.postMessage({ type: 'who', tabId: TAB_ID });
+  if (haveStored) {
+    ch.postMessage({ type: 'intent', slot: stored, tabId: TAB_ID });
   }
+  if (electionTimer !== null) return;
+  electionTimer = setTimeout(() => {
+    electionTimer = null;
+    if (tabSlot !== 0) return; // somebody claimed during the wait window
+
+    pruneStaleSlots();
+    const heardAnyPeer = knownSlots.size > 0 || peerIntentSeen;
+    // Re-read sessionStorage — `intent` handler may have wiped it if
+    // we lost a tiebreak.
+    const storedNow = Number(sessionStorage.getItem('unoSlot'));
+    const haveStoredNow = Number.isFinite(storedNow) && storedNow > 0;
+    _clientLog(`election-decide stored=${haveStoredNow ? storedNow : 'none'} heardPeers=[${knownSlotsSnapshot().join(',')}] intentSeen=${peerIntentSeen} hasIdentity=${hasIdentityForStored}`);
+
+    if (haveStoredNow) {
+      const peerOnStored = knownSlots.has(storedNow);
+      if (!peerOnStored) {
+        if (heardAnyPeer || hasIdentityForStored || storedNow === 1) {
+          _clientLog(`election-decide -> keep stored slot=${storedNow}`);
+          claimSlot(storedNow, 'restored');
+          return;
+        }
+      } else {
+        _clientLog(`election-decide stored slot=${storedNow} held by peer, falling back`);
+      }
+    }
+
+    // Fallback: no usable stored slot, or the stored slot is held by a
+    // peer, or no peers responded (lone-tab reopen). Always elect from
+    // slot 1.
+    sessionStorage.removeItem('unoSlot');
+    claimSlot(pickFreeSlot(), 'elected');
+  }, ELECTION_MS);
 })();
 
 setInterval(() => {
@@ -255,16 +422,39 @@ setInterval(() => {
   if (tabSlot) ch.postMessage({ type: 'heartbeat', slot: tabSlot, tabId: TAB_ID });
 }, HEARTBEAT_MS);
 
+// Be aggressive about announcing our exit — without it the surviving
+// peer takes up to STALE_MS (4s) to evict our entry, during which a
+// brand-new tab might land on a slot it shouldn't.
+//
+// `beforeunload` is the obvious choice but Chrome / Firefox both skip
+// it for some "close" paths (page navigation, multi-tab close from a
+// menu, mobile background-kill). `pagehide` fires more reliably as the
+// modern equivalent. Using both, plus `visibilitychange` on hidden, gives
+// the best coverage. The guard prevents double-bye spam if multiple
+// events fire in quick succession.
+let byeSent = false;
+function announceBye(): void {
+  if (byeSent || !tabSlot) return;
+  byeSent = true;
+  try {
+    ch.postMessage({ type: 'bye', slot: tabSlot, tabId: TAB_ID });
+  } catch {
+    // Channel may be closing already; ignore.
+  }
+}
 window.addEventListener('beforeunload', () => {
-  if (tabSlot) ch.postMessage({ type: 'bye', slot: tabSlot, tabId: TAB_ID });
-  ch.close();
+  announceBye();
+  try { ch.close(); } catch {}
 });
-const CLIENT_PREFIX = '[client]';
+window.addEventListener('pagehide', () => {
+  announceBye();
+});
+const CLIENT_PREFIX = _CLIENT_PREFIX;
 function clientLog(msg: string, ...args: unknown[]): void {
-  console.log(`${CLIENT_PREFIX} ${msg}`, ...args);
+  _clientLog(msg, ...args);
 }
 function clientWarn(msg: string, ...args: unknown[]): void {
-  console.warn(`${CLIENT_PREFIX} ${msg}`, ...args);
+  _clientWarn(msg, ...args);
 }
 
 // ── Error definitions (fetched from /errors) ─────────────

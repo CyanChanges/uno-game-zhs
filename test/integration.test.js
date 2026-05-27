@@ -337,3 +337,42 @@ describe('Server validates dev events (task #8)', () => {
     a.close()
   })
 })
+
+describe('Lobby ID normalization', () => {
+  it('case-insensitive: mixed-case lobby ids land in the same room', async () => {
+    // The browser client uppercases on join, but a non-browser client (or
+    // an out-of-date frontend) could send a mixed-case id. The server
+    // normalizes server-side so "Room", "room", and "ROOM" all route to
+    // the same lobby — otherwise users get split into "looks-like-the-same
+    // lobby" rooms and can't see each other.
+    const a = await openClient()
+    await a.next('init')
+    a.send({ action: 'join', name: 'Alice', lobbyId: 'norm-Mixed' })
+    const aPlayers = await a.next('players')
+    expect(aPlayers.lobbyId).toBe('NORM-MIXED')
+
+    const b = await openClient()
+    await b.next('init')
+    // B uses a different case — should land in A's room, not a fresh one.
+    b.send({ action: 'join', name: 'Bob', lobbyId: 'norm-mixed' })
+    const bPlayers = await b.next('players')
+    expect(bPlayers.lobbyId).toBe('NORM-MIXED')
+    expect(bPlayers.players.length).toBe(2)
+    a.close(); b.close()
+  })
+
+  it('trims surrounding whitespace before matching', async () => {
+    const a = await openClient()
+    await a.next('init')
+    a.send({ action: 'join', name: 'Alice', lobbyId: 'WS-TEST' })
+    await a.next('players')
+
+    const b = await openClient()
+    await b.next('init')
+    b.send({ action: 'join', name: 'Bob', lobbyId: '  ws-test  ' })
+    const bPlayers = await b.next('players')
+    expect(bPlayers.lobbyId).toBe('WS-TEST')
+    expect(bPlayers.players.length).toBe(2)
+    a.close(); b.close()
+  })
+})

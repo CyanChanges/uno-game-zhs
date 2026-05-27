@@ -119,6 +119,16 @@ function isValidLobbyId(v: unknown): v is string {
     && LOBBY_ID_REGEX.test(v);
 }
 
+// Canonical form of a lobby id: trimmed of surrounding whitespace and
+// upper-cased so case-insensitive matches on the same room are routed to
+// the same Map entry. The browser client already uppercases its input but
+// other clients (curl, scripts, an out-of-date frontend) may not — without
+// normalization "ROOM" and "Room" produce two separate lobbies and the
+// user can't join their friend's game.
+function normalizeLobbyId(v: string): string {
+  return v.trim().toUpperCase();
+}
+
 function isValidPlayerName(v: unknown): v is string {
   return typeof v === 'string'
     && v.length >= NAME_LENGTH_MIN
@@ -1201,6 +1211,11 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             ws.send(JSON.stringify(errorResponse('NEED_LOBBY_NAME')));
             return;
           }
+          // Normalize lobby ID so case differences route to the same room.
+          // Without this, a non-browser client (or the frontend before it
+          // gained the toUpperCase guard) could send "Room" and end up in
+          // a fresh lobby distinct from the existing "ROOM".
+          message.lobbyId = normalizeLobbyId(message.lobbyId);
           let lobby = findOrCreateLobby(message.lobbyId);
 
           if (startedLobbies.has(lobby.id)) {
@@ -1612,6 +1627,9 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             ws.send(JSON.stringify(errorResponse('INVALID_PLAYER_NAME')));
             return;
           }
+          // Match join's lobbyId normalization so spectators can always
+          // resolve a room their friend created with mixed-case input.
+          message.lobbyId = normalizeLobbyId(message.lobbyId);
           const lobby = lobbies.get(message.lobbyId!);
           if (!lobby || !lobby.game.started) {
             ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED')));
