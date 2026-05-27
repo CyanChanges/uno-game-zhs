@@ -227,6 +227,7 @@ type SlotOrigin = 'restored' | 'elected';
 let slotOrigin: SlotOrigin = 'elected';
 
 function claimSlot(slot: number, origin: SlotOrigin): void {
+  const wasUnclaimed = tabSlot === 0;
   _clientLog(`claimSlot slot=${slot} origin=${origin} tabId=${TAB_ID.slice(0, 6)} known=[${knownSlotsSnapshot().join(',')}]`);
   tabSlot = slot;
   slotOrigin = origin;
@@ -254,6 +255,37 @@ function claimSlot(slot: number, origin: SlotOrigin): void {
   }
   pendingWrites.clear();
   resolveSlotReady();
+
+  // Re-run the slot-bound prefill on EVERY claim, not just the first.
+  // After a same-slot collision the tab gets re-elected to a different
+  // slot, but `slotReady` only resolves once — so the original
+  // slotReady.then(...) in connect() onopen had already prefilled the
+  // input with the FIRST slot's name and never re-ran. The stale value
+  // would either persist (showing the wrong slot's name) or, if the
+  // .then callback raced ahead of the re-election, read tabSlot=0 and
+  // produce an empty input. `applySlotPrefill` handles both: it's a
+  // pure function of the now-claimed slot, idempotent, and safe to
+  // call multiple times.
+  if (!wasUnclaimed) {
+    applySlotPrefill();
+  }
+}
+
+// Pull the stored name / lobby for the current slot back into the input
+// fields. Used both from the connect() onopen path (for the initial
+// claim) and from claimSlot itself when we re-elect after a collision.
+function applySlotPrefill(): void {
+  if (typeof nameInput === 'undefined' || !nameInput) return;
+  // Don't overwrite if the user has already typed something during
+  // the election window — their keystrokes shouldn't be clobbered.
+  // We detect "user typed" via pendingWrites (if there's a pending
+  // unoPlayerName write, the user typed something). After claimSlot
+  // flushes pendingWrites the entry is gone, so we instead compare
+  // against the slot's stored value.
+  const storedName = store.get('unoPlayerName') || '';
+  const storedLobby = store.get('unoLobbyId') || '';
+  if (storedName && nameInput.value !== storedName) nameInput.value = storedName;
+  if (storedLobby && lobbyIdInput.value !== storedLobby) lobbyIdInput.value = storedLobby;
 }
 
 function runElection(): void {
@@ -2570,12 +2602,22 @@ function showReaction(playerId: string, type: string, content: string): void {
     popup.innerHTML = `<img src="/icons/${icon}.svg" style="width:32px;height:32px;">`;
   }
 
-  let width = 0;
+  // Reaction-popup readability budget. Average human read speed lands
+  // around 5 char/sec for English running text and ~3 char/sec for
+  // Chinese (each glyph carries more meaning). The reaction is also
+  // floating across the screen and competing with game UI for
+  // attention, so we deliberately bias toward "linger longer". Each
+  // character contributes a fraction of a second; CJK glyphs count for
+  // more time-per-glyph than ASCII because there are typically fewer
+  // of them per equivalent thought.
+  let chars = 0;
   for (const ch of content) {
-    if (/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch)) width += 1;
-    else width += 0.3;
+    if (/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch)) chars += 0.55;
+    else chars += 0.18;
   }
-  const duration = Math.max(1.5, Math.min(5, 1 + width * 0.1));
+  // Floor of ~3s lets even a single emoji breathe; ceiling of ~9s
+  // caps the longest messages so they don't loiter forever.
+  const duration = Math.max(3, Math.min(9, 2 + chars));
   popup.style.animationDuration = duration + 's';
 
   if (playerDiv) {

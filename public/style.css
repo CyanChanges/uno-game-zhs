@@ -1337,12 +1337,17 @@ body.player-action-disabled #player-hand>* {
         transform: translateX(-50%) translateY(0) scale(0.5);
     }
 
-    10% {
+    /* Pop in quickly so the message is readable as soon as possible. */
+    8% {
         opacity: 1;
         transform: translateX(-50%) translateY(-10px) scale(1);
     }
 
-    70% {
+    /* Hold full opacity for the bulk of the animation — readers need
+       time to actually parse the text, especially the longer messages
+       at our 9s upper bound. The plateau used to end at 70%; widening
+       to 85% gives ~7.7s of readable time on a 9s message. */
+    85% {
         opacity: 1;
         transform: translateX(-50%) translateY(-40px);
     }
