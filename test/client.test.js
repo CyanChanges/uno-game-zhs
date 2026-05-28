@@ -2857,4 +2857,237 @@ describe('UNO Client', () => {
     await pageA.close(); await pageB.close()
   })
 
+  // ── Keyboard adaptation for buttons ─────────────────────
+
+  // Lobby: Enter on the name input submits the join.
+  it('lobby: Enter in the name input clicks join', { timeout: 30000 }, async () => {
+    const ctx = await browser.newContext()
+    const page = await ctx.newPage()
+    await page.goto(BASE)
+    await page.waitForSelector('#name')
+    await page.fill('#name', 'KbdJoiner')
+    await page.fill('#lobby-id', 'kbd-' + Date.now())
+    await page.locator('#name').focus()
+    await page.keyboard.press('Enter')
+    // Expect the join to succeed: a players list appears.
+    await page.waitForSelector('#players li', { timeout: 5000 })
+    const items = await page.$$('#players li')
+    expect(items.length).toBe(1)
+    await page.close()
+    await ctx.close()
+  })
+
+  // Lobby: R toggles ready (when ready button is visible).
+  it('lobby: pressing R toggles the ready button', { timeout: 30000 }, async () => {
+    // Isolated contexts so the slot-election BroadcastChannel and
+    // localStorage from earlier tests in this file don't leak in and
+    // wipe identity at the worst moment.
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'kbd-r-' + Date.now()
+    await pageA.fill('#name', 'AA'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'BB'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    // Move focus away from the lobby-id input so R isn't typed into it.
+    await pageA.evaluate(() => { document.body.focus(); const a = document.activeElement; if (a && a.tagName === "INPUT") a.blur(); })
+    // Sanity: ready button must be visible AND focus moved off input.
+    const probe = await pageA.evaluate(() => {
+      const btn = document.getElementById('ready')
+      const ae = document.activeElement
+      return {
+        readyDisp: btn ? btn.style.display : null,
+        readyDisabled: btn ? btn.disabled : null,
+        readyText: btn ? btn.textContent : null,
+        gameDisp: document.getElementById('game') ? document.getElementById('game').style.display : null,
+        focusedTag: ae ? ae.tagName : null,
+      }
+    })
+    expect(probe).toEqual({
+      readyDisp: 'block',
+      readyDisabled: false,
+      readyText: '准备',
+      gameDisp: 'none',
+      focusedTag: 'BODY',
+    })
+    // The page-level keydown listens on document, so dispatching to
+    // body via keyboard.press should be enough.
+    await pageA.keyboard.press('KeyR')
+    // Ready text should switch to "取消准备".
+    await pageA.waitForFunction(() => {
+      const btn = document.getElementById('ready')
+      return btn && btn.textContent === '取消准备'
+    }, { timeout: 5000 })
+    await pageA.close(); await pageB.close()
+    await ctxA.close(); await ctxB.close()
+  })
+
+  // Lobby: I invites an AI (creator only).
+  it('lobby: pressing I invites an AI for the creator', { timeout: 30000 }, async () => {
+    const ctx = await browser.newContext()
+    const page = await ctx.newPage()
+    await page.goto(BASE)
+    await page.fill('#name', 'AI-host')
+    await page.fill('#lobby-id', 'kbd-i-' + Date.now())
+    await page.click('#join')
+    await page.waitForSelector('#players li')
+    await page.evaluate(() => { document.body.focus(); const a = document.activeElement; if (a && a.tagName === "INPUT") a.blur(); })
+    await page.keyboard.press('i')
+    await page.waitForFunction(() => document.querySelectorAll('#players li').length === 2, { timeout: 5000 })
+    const aiCount = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('#players li')).filter(li => li.classList.contains('ai')).length
+    )
+    expect(aiCount).toBe(1)
+    await page.close()
+    await ctx.close()
+  })
+
+  // In-game: D draws a card on the active player's turn.
+  it('in-game: pressing D draws a card on your turn', { timeout: 30000 }, async () => {
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'kbd-d-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const turnPage = (await isMyTurn(pageA)) ? pageA : pageB
+
+    const beforeHand = await turnPage.$$eval('#player-hand .card', els => els.length)
+    await turnPage.evaluate(() => { document.body.focus(); const a = document.activeElement; if (a && a.tagName === "INPUT") a.blur(); })
+    await turnPage.keyboard.press('d')
+    // After drawing, hand grew by 1.
+    await turnPage.waitForFunction((before) => {
+      return document.querySelectorAll('#player-hand .card').length === before + 1
+    }, beforeHand, { timeout: 5000 })
+    await pageA.close(); await pageB.close()
+    await ctxA.close(); await ctxB.close()
+  })
+
+  // In-game: S triggers the surrender confirm (button click → modal).
+  it('in-game: pressing S opens the surrender confirm', { timeout: 30000 }, async () => {
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'kbd-s-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    await pageA.evaluate(() => { document.body.focus(); const a = document.activeElement; if (a && a.tagName === "INPUT") a.blur(); })
+    await pageA.keyboard.press('s')
+    // The surrender confirm should appear (modal-overlay visible).
+    await pageA.waitForFunction(() => {
+      const ov = document.getElementById('modal-overlay')
+      return ov && !ov.classList.contains('hidden')
+    }, { timeout: 5000 })
+    // Cancel the modal so the test exits cleanly.
+    await pageA.click('#modal-cancel-btn')
+    await pageA.close(); await pageB.close()
+    await ctxA.close(); await ctxB.close()
+  })
+
+  // Anywhere: ? opens rules.
+  it('? opens the rules modal from anywhere', { timeout: 20000 }, async () => {
+    const ctx = await browser.newContext()
+    const page = await ctx.newPage()
+    await page.goto(BASE)
+    await page.waitForSelector('#name')
+    await page.evaluate(() => { document.body.focus(); const a = document.activeElement; if (a && a.tagName === "INPUT") a.blur(); })
+    // Keyboard.press('?') sends the literal char in Chromium.
+    await page.keyboard.press('?')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('rules-overlay')
+      return el && !el.classList.contains('hidden')
+    }, { timeout: 3000 })
+    await page.close()
+    await ctx.close()
+  })
+
+  // Game-over: Enter dismisses the game-over overlay.
+  it('Enter on the game-over overlay returns to lobby', { timeout: 30000 }, async () => {
+    const ctx = await browser.newContext()
+    const page = await ctx.newPage()
+    await page.goto(BASE)
+    await page.waitForSelector('#name')
+    // Force the game-over overlay open synthetically — we don't need
+    // a real game to test the keyboard path, just that pressing Enter
+    // while it's visible clicks the button.
+    await page.evaluate(() => {
+      const ov = document.getElementById('game-over-overlay')
+      const content = document.getElementById('game-over-content')
+      if (ov) {
+        ov.classList.remove('hidden')
+        ov.style.display = 'flex'
+      }
+      if (content) {
+        content.className = 'aborted'
+      }
+      // Hook so we can detect the click later.
+      ;window.__gameOverClicked = false
+      const btn = document.getElementById('game-over-btn')
+      if (btn) btn.addEventListener('click', () => { window.__gameOverClicked = true })
+    })
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(() => window.__gameOverClicked === true, { timeout: 3000 })
+    await page.close()
+    await ctx.close()
+  })
+
+  // In-game: T toggles card layout (扇形 / 滚动).
+  it('in-game: pressing T toggles card layout', { timeout: 30000 }, async () => {
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'kbd-t-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const before = await pageA.evaluate(() => {
+      const btn = document.getElementById('card-layout-toggle')
+      return btn ? btn.textContent : null
+    })
+    await pageA.evaluate(() => { document.body.focus(); const a = document.activeElement; if (a && a.tagName === "INPUT") a.blur(); })
+    await pageA.keyboard.press('t')
+    await pageA.waitForFunction((prev) => {
+      const btn = document.getElementById('card-layout-toggle')
+      return btn && btn.textContent !== prev
+    }, before, { timeout: 5000 })
+    await pageA.close(); await pageB.close()
+    await ctxA.close(); await ctxB.close()
+  })
+
 })

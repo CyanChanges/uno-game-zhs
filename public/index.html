@@ -20,7 +20,7 @@
             <input type="text" id="lobby-id" placeholder="大厅名称" autocomplete="off"
                    spellcheck="false" autocapitalize="off">
         </div>
-        <button id="join">加入 (创建)</button>
+        <button id="join" title="键盘快捷键：Enter">加入 (创建)</button>
         <div id="lobby-info" style="display: none;">
             <h3>大厅: <span id="current-lobby-id"></span></h3>
             <p>分享大厅 ID 即可加入!</p>
@@ -35,8 +35,8 @@
                 data-tooltip="点击查看完整加牌规则&#10;链式加牌：+2/+4 可叠加，受害者可接加牌反击&#10;直接加牌：+2/+4 直接让下家抽牌，不叠加">ⓘ</span>
         </div>
         <ul id="players"></ul>
-        <button id="invite-ai" style="display: none;">邀请 AI</button>
-        <button id="ready" style="display: none;">准备</button>
+        <button id="invite-ai" style="display: none;" title="键盘快捷键：I">邀请 AI</button>
+        <button id="ready" style="display: none;" title="键盘快捷键：R">准备</button>
     </div>
     <div id="game" style="display: none;">
         <div id="turn-indicator">
@@ -45,9 +45,9 @@
         <div id="opponent-hands"></div>
         <div id="center-area">
             <div id="action-buttons">
-                <button id="draw-card">抽牌</button>
-                <button id="surrender-btn">认输</button>
-                <button id="leave-spectate-btn" style="display:none;">退出观战</button>
+                <button id="draw-card" title="键盘快捷键：D 或 Space">抽牌</button>
+                <button id="surrender-btn" title="键盘快捷键：S">认输</button>
+                <button id="leave-spectate-btn" style="display:none;" title="键盘快捷键：L">退出观战</button>
             </div>
             <div id="discard-pile"></div>
             <div id="wild-color-picker" style="display: none;">
@@ -95,7 +95,7 @@
         </div>
         <div id="player-hand-area">
             <div id="card-controls">
-                <button id="card-layout-toggle">切换到滚动排列</button>
+                <button id="card-layout-toggle" title="键盘快捷键：T">切换到滚动排列</button>
             </div>
             <div id="player-hand"></div>
         </div>
@@ -225,12 +225,12 @@
                 秒），超时则系统自动为该玩家抽一张牌并轮到下一位玩家。倒计时显示在回合提示旁。</p>
 
             <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">键盘快捷键</h3>
-            <p style="font-size:0.85rem;color:#a0aec0;">出牌时可按 1~9（或小键盘 1~9）选中第 1 至第 9 张手牌，按 0（或 Numpad0）选中第 10 张，
-                <b>再按 Enter</b> 或 <b>再次按下相同的数字键</b> 出牌；ESC 或点击空白区域取消选择。每张可用手牌右上角会显示对应的数字角标。
-            </p>
-            <p style="font-size:0.85rem;color:#a0aec0;">出 wild 等黑牌弹出选色器后，可按 1~4 直接选取（红/黄/绿/蓝），或用 ←→ 切换、Enter 确认、ESC 取消。
-            </p>
-            <p style="font-size:0.85rem;color:#a0aec0;">弹窗内可按 Tab / 方向键在「确定 / 取消」之间切换，按 Enter 执行所选按钮。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;"><b>大厅</b>：在名称/大厅 ID 输入框按 Enter 提交加入；<b>R</b> 切换准备；<b>I</b> 邀请 AI（仅房主）。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;"><b>对局</b>：按 1~9（或小键盘 1~9）选中第 1 至第 9 张手牌，按 0（或 Numpad0）选中第 10 张，<b>再按 Enter</b> 或 <b>再次按下相同的数字键</b> 出牌；ESC 或点击空白区域取消选择。每张可用手牌右上角会显示对应的数字角标。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;"><b>D</b> 或 <b>Space</b> 抽牌；<b>S</b> 认输；<b>L</b> 退出观战；<b>T</b> 切换手牌排列方式（扇形/滚动）。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;">出 wild 等黑牌弹出选色器后，可按 1~4 直接选取（红/黄/绿/蓝），或用 ←→ 切换、Enter 确认、ESC 取消。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;"><b>弹窗</b>内可按 Tab / 方向键在「确定 / 取消」之间切换，按 Enter 执行所选按钮，<b>ESC</b> 关闭任意弹窗。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;">任何位置按 <b>?</b> 打开本规则弹窗。</p>
 
             <button id="rules-close-btn"
                 style="width:100%;padding:10px;margin-top:24px;border:1px solid #374151;border-radius:10px;background:transparent;color:#a0aec0;font-size:0.85rem;cursor:pointer;font-family:inherit;">关闭</button>

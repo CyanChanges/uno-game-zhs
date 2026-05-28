@@ -226,9 +226,14 @@ function pickFreeSlot(): number {
 type SlotOrigin = 'restored' | 'elected';
 let slotOrigin: SlotOrigin = 'elected';
 
+// True once the first claimSlot has fired, meaning slotReady was
+// already resolved and any re-elect after this point needs to actively
+// re-pull the slot's stored values into the inputs.
+let hasClaimedOnce = false;
+
 function claimSlot(slot: number, origin: SlotOrigin): void {
-  const wasUnclaimed = tabSlot === 0;
   _clientLog(`claimSlot slot=${slot} origin=${origin} tabId=${TAB_ID.slice(0, 6)} known=[${knownSlotsSnapshot().join(',')}]`);
+  const isReclaim = hasClaimedOnce;
   tabSlot = slot;
   slotOrigin = origin;
   sessionStorage.setItem('unoSlot', String(slot));
@@ -255,18 +260,17 @@ function claimSlot(slot: number, origin: SlotOrigin): void {
   }
   pendingWrites.clear();
   resolveSlotReady();
+  hasClaimedOnce = true;
 
-  // Re-run the slot-bound prefill on EVERY claim, not just the first.
-  // After a same-slot collision the tab gets re-elected to a different
-  // slot, but `slotReady` only resolves once — so the original
-  // slotReady.then(...) in connect() onopen had already prefilled the
-  // input with the FIRST slot's name and never re-ran. The stale value
-  // would either persist (showing the wrong slot's name) or, if the
-  // .then callback raced ahead of the re-election, read tabSlot=0 and
-  // produce an empty input. `applySlotPrefill` handles both: it's a
-  // pure function of the now-claimed slot, idempotent, and safe to
-  // call multiple times.
-  if (!wasUnclaimed) {
+  // Re-run the slot-bound prefill on EVERY claim AFTER the first one.
+  // The first claim is handled by connect()'s onopen → slotReady.then
+  // path. Subsequent re-claims (after a same-slot collision causes us
+  // to drop and re-elect to a different slot) need to pull the new
+  // slot's stored values into the inputs — slotReady is already
+  // resolved so .then(...) won't fire again. `applySlotPrefill` is
+  // idempotent and safe to call multiple times; it skips writes when
+  // the input already matches the stored value.
+  if (isReclaim) {
     applySlotPrefill();
   }
 }
@@ -2095,6 +2099,18 @@ document.addEventListener('DOMContentLoaded', () => {
     store.set('unoLobbyId', lobbyIdInput.value.toUpperCase());
   });
 
+  // Pressing Enter while the name or lobby-id input is focused submits
+  // the join — natural shortcut even though we don't use a <form>.
+  // The button itself remains the canonical click target.
+  function maybeSubmitJoinOnEnter(e: KeyboardEvent): void {
+    if (e.key !== 'Enter') return;
+    if (joinButton.disabled) return;
+    e.preventDefault();
+    joinButton.click();
+  }
+  nameInput.addEventListener('keydown', maybeSubmitJoinOnEnter);
+  lobbyIdInput.addEventListener('keydown', maybeSubmitJoinOnEnter);
+
   getLeaveSpectateBtn()?.addEventListener('click', async () => {
     const ok = await showConfirm('确定要退出观战吗？');
     if (!ok) return;
@@ -2236,6 +2252,120 @@ document.addEventListener('DOMContentLoaded', () => {
     // clicks (Bug #4 fix), so we don't need to gate again here.
     handleCardClick(card, idx, myHand);
   }
+
+  // Helper: ignore keyboard shortcuts while a text input is focused so
+  // typing in chat doesn't trigger game actions.
+  function isTypingInTextField(): boolean {
+    const ae = document.activeElement as HTMLElement | null;
+    if (!ae) return false;
+    const tag = ae.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return true;
+    return !!ae.isContentEditable;
+  }
+
+  // Lobby & game-action keyboard shortcuts. Single-letter keys mapped
+  // to the most-clicked buttons. The implementation is deliberately
+  // narrow: each action validates its own preconditions (button
+  // disabled / hidden / not-our-turn) so a stray keypress never causes
+  // a stale request.
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    // Don't fire while a modifier is held — those are reserved for
+    // browser shortcuts (Ctrl+R reload, etc.).
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // Don't fire while typing in chat/lobby inputs.
+    if (isTypingInTextField()) return;
+    // Don't fire while any modal is open — they have their own keys.
+    if (modalOverlay.style.display === 'flex') return;
+    if (wildColorPicker.style.display === 'block') return;
+    // Don't fire while rules / about overlays are open (they have ESC
+    // handler for closing; other keys would be confusing).
+    const rulesOverlay = document.getElementById('rules-overlay');
+    const aboutOverlay = document.getElementById('about-overlay');
+    if (rulesOverlay && !rulesOverlay.classList.contains('hidden')) return;
+    if (aboutOverlay && !aboutOverlay.classList.contains('hidden')) return;
+    // Don't fire while game-over overlay is showing.
+    if (gameOverOverlay && !gameOverOverlay.classList.contains('hidden')) {
+      // But Enter on the game-over screen acknowledges and returns to
+      // lobby — match what clicking the button does.
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        gameOverBtn.click();
+      }
+      return;
+    }
+
+    const k = e.key.toLowerCase();
+
+    // ── Universal: ? opens rules from anywhere ─────────────
+    // The literal '?' character requires Shift on most layouts;
+    // cleanest way is to check e.key directly without lowercasing.
+    if (e.key === '?') {
+      e.preventDefault();
+      const link = document.getElementById('rules-link') as HTMLAnchorElement | null;
+      if (link) link.click();
+      return;
+    }
+
+    // ── In-lobby (game div hidden) ─────────────────────────
+    if (gameDiv.style.display === 'none') {
+      // R toggles ready (only when the button is visible to us).
+      if (k === 'r' && readyButton && readyButton.style.display !== 'none' && !readyButton.disabled) {
+        e.preventDefault();
+        readyButton.click();
+        return;
+      }
+      // I invites an AI (creator only — button is hidden otherwise).
+      if (k === 'i' && inviteAIBtn && inviteAIBtn.style.display !== 'none') {
+        e.preventDefault();
+        inviteAIBtn.click();
+        return;
+      }
+      return;
+    }
+
+    // ── In-game ───────────────────────────────────────────
+    // Whether it's actually our turn determines if D/S even apply.
+    const me = players.find(p => p.id === myId);
+    const isMyTurn = !!me && players[currentTurn] && players[currentTurn].id === myId;
+
+    // D or Space: draw a card. Space is the natural "do the thing"
+    // key in many games; D is an explicit alternative for users who
+    // want to leave Space for something else later.
+    if ((k === 'd' || e.key === ' ') && isMyTurn && !isSpectating) {
+      e.preventDefault();
+      drawCardButton.click();
+      return;
+    }
+    // S: surrender. Only fires the click; the existing confirm dialog
+    // takes over from there.
+    if (k === 's' && !isSpectating) {
+      const surrenderBtn = document.getElementById('surrender-btn') as HTMLButtonElement | null;
+      if (surrenderBtn && surrenderBtn.style.display !== 'none') {
+        e.preventDefault();
+        surrenderBtn.click();
+        return;
+      }
+    }
+    // L: leave (spectator-only — for active players surrender is the
+    // proper exit). The button is only visible while spectating.
+    if (k === 'l' && isSpectating) {
+      const leaveBtn = getLeaveSpectateBtn();
+      if (leaveBtn && leaveBtn.style.display !== 'none') {
+        e.preventDefault();
+        leaveBtn.click();
+        return;
+      }
+    }
+    // T: toggle card layout (扇形 / 滚动). Available in-game only.
+    if (k === 't') {
+      const layoutBtn = document.getElementById('card-layout-toggle') as HTMLButtonElement | null;
+      if (layoutBtn && layoutBtn.offsetParent !== null) {
+        e.preventDefault();
+        layoutBtn.click();
+        return;
+      }
+    }
+  });
 
   document.addEventListener('keydown', (e: KeyboardEvent) => {
     // The wild-color picker / modal capture their own keys; bail so we
