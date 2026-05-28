@@ -387,6 +387,16 @@ h1 {
 #turn-indicator {
     background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
     color: white;
+    /* Stick to the top of the viewport so the active player's
+       indicator + countdown remain visible while the user scrolls
+       through their hand. The body padding pushes content down so the
+       sticky element sits below the page <h1>; on narrower screens
+       the user may scroll past the title and the indicator floats
+       there as a sticky pill. The 100vh fallback keeps it visible
+       even on tabs without sticky support. */
+    position: sticky;
+    top: 8px;
+    z-index: 50;
     padding: 15px 30px;
     border-radius: 15px;
     margin-bottom: 25px;
@@ -654,6 +664,16 @@ h1 {
 #turn-order {
     display: flex;
     align-items: center;
+    /* Sticky like the indicator above so the player order + card
+       counts remain visible while scrolling. Stack just below the
+       turn-indicator. */
+    position: sticky;
+    top: 80px;
+    z-index: 49;
+    background: rgba(30, 30, 30, 0.85);
+    backdrop-filter: blur(6px);
+    border-radius: 12px;
+    padding: 6px 10px;
     justify-content: center;
     gap: 4px;
     flex-wrap: wrap;
@@ -688,6 +708,37 @@ h1 {
     text-decoration: line-through;
 }
 
+/* Self gets a colored ring so the user can spot themself in the
+   turn-order strip at a glance even when many tabs / many opponents
+   are around. */
+.turn-order-pill.self {
+    border-color: #ffd166;
+    color: #ffd166;
+    font-weight: 600;
+}
+.turn-order-pill.self.current {
+    /* When it's the user's own turn, .current's gradient takes
+       precedence; we just thicken the outline. */
+    box-shadow: 0 0 8px rgba(102, 126, 234, 0.4),
+                0 0 0 2px rgba(255, 209, 102, 0.6);
+}
+
+/* Name and count laid out inline; the count gets a small chip
+   appearance so it's visually distinct from the name. */
+.turn-order-name {
+    margin-right: 6px;
+}
+.turn-order-count {
+    display: inline-block;
+    min-width: 18px;
+    padding: 0 6px;
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.18);
+    font-size: 0.7rem;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+}
+
 .turn-order-arrow {
     color: #4a5568;
     font-size: 0.8rem;
@@ -718,6 +769,16 @@ h1 {
 
 .mode-option:not(.active):hover {
     color: #e0e0e0;
+}
+
+/* Read-only draw-mode area shown to non-creators — they can see which
+   mode the lobby will use but can't toggle it. We dim the toggle and
+   disable pointer events; the info icon (ⓘ) stays interactive so they
+   can still read the rules. */
+#draw-mode-area.readonly .mode-toggle {
+    opacity: 0.6;
+    pointer-events: none;
+    cursor: default;
 }
 
 /* Spectator mode */
@@ -1096,10 +1157,12 @@ body.spectator #turn-indicator::after {
 }
 
 body.player-action-disabled #center-area {
-    cursor: not-allowed;
+    cursor: default;
 }
 
-body.player-action-disabled #discard-pile,
+/* Discard pile stays at full opacity even when it isn't our turn — it
+   carries critical game state (top card color/type) that the user
+   needs to read. The previous 0.6 dim made it harder to plan ahead. */
 body.player-action-disabled #wild-color-picker {
     opacity: 0.6;
     pointer-events: none;
@@ -1126,15 +1189,26 @@ body.player-action-disabled #draw-card:hover {
     transform: none;
 }
 
+/* Off-turn hand: keep the container at slight dim and SUPPRESS the
+   per-card not-playable opacity so the two don't multiply (0.6 * 0.7
+   = 0.42 was too dark). Each card's not-playable lift suppression
+   still applies on its own turn. */
 body.player-action-disabled #player-hand {
     user-select: none;
     -webkit-user-select: none;
     opacity: 0.6;
-    cursor: not-allowed;
+    cursor: default;
 }
 
 body.player-action-disabled #player-hand>* {
     pointer-events: none;
+    cursor: not-allowed;
+}
+
+body.player-action-disabled #player-hand .card.not-playable {
+    /* Reset the playability-based dim while we're already container-
+       dimmed — otherwise opacity stacks. */
+    opacity: 1;
 }
 
 #card-controls {
@@ -2087,4 +2161,101 @@ footer a:hover {
     outline: 2px solid rgba(102, 126, 234, 0.6);
     outline-offset: 2px;
     border-radius: 4px;
+}
+
+
+/* Penalty +N popup that floats up from the player tile when they get
+   dealt 2 or more cards in a single update (draw2 / wild4 / chain
+   penalty). Lingers for ~5s so even a glance catches it. */
+.penalty-popup {
+    position: absolute;
+    top: 0;
+    right: 8px;
+    pointer-events: none;
+    font-size: 1.4rem;
+    font-weight: 800;
+    color: #ff6b6b;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6), 0 0 12px rgba(255, 107, 107, 0.5);
+    opacity: 0;
+    transform: translateY(0);
+    animation: penaltyFloat 5s ease-out forwards;
+    z-index: 30;
+}
+
+@keyframes penaltyFloat {
+    0% {
+        opacity: 0;
+        transform: translateY(0) scale(0.8);
+    }
+    8% {
+        opacity: 1;
+        transform: translateY(-6px) scale(1.1);
+    }
+    16% {
+        transform: translateY(-10px) scale(1);
+    }
+    85% {
+        opacity: 1;
+        transform: translateY(-30px);
+    }
+    100% {
+        opacity: 0;
+        transform: translateY(-40px);
+    }
+}
+
+
+/* Reaction history pane — scrollable list of past chat / emojis. The
+   floating popups still play on every reaction; this pane just keeps
+   the textual record so users who weren't watching can scroll back. */
+#reaction-history {
+    width: 100%;
+    max-width: 600px;
+    max-height: 140px;
+    overflow-y: auto;
+    margin-top: 8px;
+    padding: 6px 10px;
+    background: rgba(20, 20, 20, 0.6);
+    border: 1px solid #2d2d2d;
+    border-radius: 10px;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    scrollbar-width: thin;
+    scrollbar-color: #4a5568 #1a1a1a;
+}
+#reaction-history:empty {
+    /* Hide the empty box so it doesn't take up space until someone
+       sends a reaction. */
+    display: none;
+}
+#reaction-history::-webkit-scrollbar { width: 6px; }
+#reaction-history::-webkit-scrollbar-thumb {
+    background: #4a5568;
+    border-radius: 3px;
+}
+.reaction-history-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    padding: 2px 0;
+}
+.reaction-history-row.self .reaction-history-name {
+    color: #ffd166;
+}
+.reaction-history-name {
+    color: #a0aec0;
+    font-weight: 600;
+    flex-shrink: 0;
+    min-width: 60px;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.reaction-history-content {
+    color: #e0e0e0;
+    word-break: break-word;
+}
+.reaction-history-content img {
+    vertical-align: middle;
 }

@@ -86,6 +86,12 @@
                 <input type="text" id="reaction-text-input" maxlength="200" placeholder="发送消息...">
                 <button id="reaction-send-btn">发送</button>
             </div>
+            <!-- Persistent message history. The floating popups over
+                 player tiles vanish after a few seconds; this list
+                 keeps the last ~30 messages so users who scroll back
+                 can catch up on chat they missed. Populated by client.ts
+                 inside showReaction(). -->
+            <div id="reaction-history" aria-live="polite"></div>
         </div>
         <div id="player-hand-area">
             <div id="card-controls">
@@ -231,7 +237,7 @@
         </div>
     </div>
     <footer class="user-select">Copyright (C) 2026 miruku (lovemilk), <a target="_blank"
-            href="https://aka.lovemilk.top/github/uno-game-zhs/blob/main/LICENSE">BSD 3-Clause License</a> · <a href="#"
+            href="https://opensource.org/license/bsd-3-clause">BSD 3-Clause License</a> · <a href="#"
             id="rules-link">规则</a> · <a href="#" id="about-link">关于</a></footer>
     <script src="client.js"></script>
 </body>

@@ -543,6 +543,12 @@ let PLAY_TIMEOUT_MS = 30000;
 // the foreground, the next paint snaps the displayed value back to the
 // real Date.now() diff with no drift.
 let turnTimerRaf: number | null = null;
+// Backup ticker that keeps the seconds-display fresh even if rAF gets
+// stalled. Some user reports show the timer stuck on "30s" — most
+// likely an rAF starvation caused by a different page being focused
+// or DevTools being open. setInterval has its own throttling story
+// for hidden tabs but it survives more edge cases than rAF alone.
+let turnTimerInterval: number | null = null;
 
 // Hovered-via-keyboard card index. -1 = none. The visual treatment matches
 // the .hovered CSS class (added below) so the hover animation is identical
@@ -615,7 +621,14 @@ function tickTurnCountdown(): void {
   if (turnDeadline === null) {
     setTurnTimerText('');
     getTurnTimerEl().classList.remove('low', 'critical');
-    turnTimerRaf = null;
+    if (turnTimerRaf !== null) {
+      window.cancelAnimationFrame(turnTimerRaf);
+      turnTimerRaf = null;
+    }
+    if (turnTimerInterval !== null) {
+      window.clearInterval(turnTimerInterval);
+      turnTimerInterval = null;
+    }
     return;
   }
   const remaining = Math.max(0, turnDeadline - Date.now());
@@ -637,11 +650,25 @@ function tickTurnCountdown(): void {
 function startTurnCountdown(): void {
   if (turnTimerRaf !== null) return;
   turnTimerRaf = window.requestAnimationFrame(tickTurnCountdown);
+  // Belt-and-suspenders: a 1s interval guarantees the display ticks
+  // even if rAF gets stalled (some Chromium states let rAF pause for
+  // hidden / inactive tabs OR throttle to extreme rates). The
+  // interval is cheap — it just calls tick which short-circuits if
+  // turnDeadline is null.
+  if (turnTimerInterval === null) {
+    turnTimerInterval = window.setInterval(() => {
+      if (turnDeadline !== null) tickTurnCountdown();
+    }, 250);
+  }
 }
 function stopTurnCountdown(): void {
   if (turnTimerRaf !== null) {
     window.cancelAnimationFrame(turnTimerRaf);
     turnTimerRaf = null;
+  }
+  if (turnTimerInterval !== null) {
+    window.clearInterval(turnTimerInterval);
+    turnTimerInterval = null;
   }
 }
 
@@ -968,6 +995,10 @@ function connect(): void {
           document.body.classList.toggle('spectator', isSpectating);
         }
         clientLog('[update] myId =', myId, 'turn =', message.turn, 'players =', (message.players || []).map(p => ({ id: p.id, name: p.name })), 'current =', (message.players || [])[message.turn || 0] ? (message.players || [])[message.turn || 0].id : null);
+        // Diff card counts BEFORE we replace `players` with the new
+        // snapshot — any player whose count went UP just got dealt
+        // penalty cards (+N popup over their tile).
+        diffCardCountsForPenaltyPopup(players, message.players || []);
         players = message.players || [];
         currentTurn = message.turn || 0;
         gameDirection = message.direction || 1;
@@ -1186,7 +1217,22 @@ function updateTurnIndicator(): void {
     if (i === currentTurn) pill.classList.add('current');
     if (p.isAI) pill.classList.add('ai');
     if (p.disconnected) pill.classList.add('disconnected');
-    pill.textContent = p.name;
+    if (p.id === myId) pill.classList.add('self');
+
+    const nameEl = document.createElement('span');
+    nameEl.classList.add('turn-order-name');
+    nameEl.textContent = p.name;
+
+    const countEl = document.createElement('span');
+    countEl.classList.add('turn-order-count');
+    // For self, show the actual hand length we know about so the
+    // count updates eagerly on play (rather than waiting for the
+    // server's broadcast); for opponents, fall back to cardCount.
+    const cnt = (p.id === myId) ? myHand.length : (p.cardCount ?? 0);
+    countEl.textContent = String(cnt);
+
+    pill.appendChild(nameEl);
+    pill.appendChild(countEl);
     orderEl.appendChild(pill);
 
     if (i < players.length - 1) {
@@ -1253,6 +1299,13 @@ function resetGameState(): void {
   stopTurnCountdown();
   setTurnTimerText('');
   turnDeadline = null;
+  // Reset spectator state — without this a former spectator coming
+  // back to the lobby would still have body.spectator and the
+  // start-handler's `if (isSpectating)` branch would hide the hand.
+  isSpectating = false;
+  document.body.classList.remove('spectator');
+  const _btnSpec = getLeaveSpectateBtn();
+  if (_btnSpec) _btnSpec.style.display = 'none';
   // Reset to lobby
   lobbyDiv.style.display = 'block';
   gameDiv.style.display = 'none';
@@ -1404,8 +1457,13 @@ function updatePlayers(newPlayers: Player[], turn: number): void {
   if (inviteAIBtn) {
     inviteAIBtn.style.display = (me && me.isCreator) ? '' : 'none';
   }
+  // Show the draw-mode indicator to everyone in the lobby — non-creators
+  // get a read-only view (so they can see what mode the game will use)
+  // while the creator gets the interactive toggle. CSS handles the
+  // disabled appearance via the `.readonly` class.
   const drawModeArea = document.getElementById('draw-mode-area')!;
-  drawModeArea.style.display = (me && me.isCreator) ? 'flex' : 'none';
+  drawModeArea.style.display = 'flex';
+  drawModeArea.classList.toggle('readonly', !(me && me.isCreator));
   updateReadyButton();
 
   // Drive the reconnect-countdown text via rAF instead of setInterval. The
@@ -2103,6 +2161,34 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   document.getElementById('rules-close-btn')!.addEventListener('click', closeRules);
 
+  // Global ESC handler — closes the topmost open auxiliary overlay
+  // (rules / about). The modal-overlay (showAlert/showConfirm) and the
+  // wild-color picker have their own ESC handlers attached during
+  // their lifecycle, so we explicitly skip them here. game-over-overlay
+  // also stays — it requires the user to click the button to acknowledge.
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key !== 'Escape') return;
+    // Don't hijack ESC if focus is in a text input where the user
+    // probably wants to clear typed text or close native autocomplete.
+    const tag = (document.activeElement && (document.activeElement as HTMLElement).tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    // Already-handled overlays (showAlert/showConfirm modal owns its
+    // own keyboard handler in attachModalKeyboard).
+    if (modalOverlay.style.display === 'flex') return;
+    if (wildColorPicker.style.display === 'block') return;
+    // Close rules first (likely opened most recently when both are open).
+    if (!rulesOverlay.classList.contains('hidden')) {
+      e.preventDefault();
+      closeRules();
+      return;
+    }
+    if (!aboutOverlay.classList.contains('hidden')) {
+      e.preventDefault();
+      closeAbout();
+      return;
+    }
+  });
+
   // Draw mode toggle
   document.querySelectorAll('#draw-mode-toggle-box .mode-option').forEach(el => {
     el.addEventListener('click', () => {
@@ -2581,6 +2667,54 @@ function showGameAborted(): void {
   gameOverOverlay.style.display = 'flex';
 }
 
+// Diff two consecutive `players` snapshots (cardCount field) and float
+// a "+N" popup over each tile whose count went up — visualizes draw2 /
+// wild4 penalties so the targeted player sees what just happened. We
+// only fire on a positive delta because losing cards is the normal
+// flow (the playing player's count goes -1 every turn) and showing a
+// "-1" popup would be noisy.
+//
+// We skip the popup for `myId` because the user's own hand is rendered
+// in detail elsewhere, but the +N over the opponents' tiles is the
+// useful feedback. Caller must invoke BEFORE replacing `players` with
+// the new snapshot — we read the previous `players` array from outer
+// scope.
+function diffCardCountsForPenaltyPopup(prev: Player[], next: Player[]): void {
+  if (!prev || !next) return;
+  const prevById = new Map(prev.map(p => [p.id, p]));
+  for (const np of next) {
+    const op = prevById.get(np.id);
+    if (!op) continue;
+    const before = op.cardCount ?? 0;
+    const after = np.cardCount ?? 0;
+    const delta = after - before;
+    // Threshold of 2: avoids popping for the +1 a player gets when
+    // they manually click "draw" (boring). 2/4/N from chain penalties
+    // are the interesting case.
+    if (delta >= 2) {
+      spawnPenaltyPopup(np.id, delta);
+    }
+  }
+}
+
+function spawnPenaltyPopup(playerId: string, delta: number): void {
+  const playerDiv = opponentHandsDiv.querySelector(`[data-player-id="${playerId}"]`) as HTMLDivElement | null;
+  if (!playerDiv && playerId !== myId) return;
+  const popup = document.createElement('div');
+  popup.classList.add('penalty-popup');
+  popup.textContent = `+${delta}`;
+  // Pin to player tile if it's an opponent; for self, attach to the
+  // turn indicator so it floats near the player's own status.
+  if (playerDiv) {
+    playerDiv.appendChild(popup);
+  } else {
+    const target = document.getElementById('turn-indicator');
+    if (target) target.appendChild(popup);
+  }
+  // 5s total animation = 0.4s rise + 4.2s linger + 0.4s fade.
+  setTimeout(() => popup.remove(), 5200);
+}
+
 function showReaction(playerId: string, type: string, content: string): void {
   const playerDiv = opponentHandsDiv.querySelector(`[data-player-id="${playerId}"]`) as HTMLDivElement;
   if (!playerDiv && playerId !== myId) return;
@@ -2635,6 +2769,62 @@ function showReaction(playerId: string, type: string, content: string): void {
   }
 
   popup.addEventListener('animationend', () => popup.remove(), { once: true });
+
+  // Append to persistent chat history. Cap at 30 entries so the box
+  // doesn't grow without bound; auto-scroll to bottom so the latest
+  // message is always visible.
+  appendReactionHistory(playerId, type, content);
+}
+
+const REACTION_HISTORY_MAX = 30;
+function appendReactionHistory(playerId: string, type: string, content: string): void {
+  const box = document.getElementById('reaction-history');
+  if (!box) return;
+  const sender = players.find(p => p.id === playerId);
+  const senderName = sender ? sender.name : (playerId === myId ? '你' : '?');
+  const isSelf = playerId === myId;
+
+  const row = document.createElement('div');
+  row.classList.add('reaction-history-row');
+  if (isSelf) row.classList.add('self');
+
+  const nameEl = document.createElement('span');
+  nameEl.classList.add('reaction-history-name');
+  nameEl.textContent = senderName;
+
+  const contentEl = document.createElement('span');
+  contentEl.classList.add('reaction-history-content');
+  if (type === 'emoji') {
+    const iconMap: Record<string, string> = {
+      '😂': 'laugh', '😡': 'angry', '😱': 'shock', '👍': 'like',
+      '👎': 'dislike', '🎉': 'party', '😭': 'cry', '🔥': 'fire',
+    };
+    const icon = iconMap[content] || 'laugh';
+    const img = document.createElement('img');
+    img.src = `/icons/${icon}.svg`;
+    img.width = 18;
+    img.height = 18;
+    img.alt = content;
+    contentEl.appendChild(img);
+  } else {
+    // Use textContent (not innerHTML) so user-typed strings can't
+    // inject HTML. This mirrors the encodeUGC pattern used elsewhere.
+    contentEl.textContent = content;
+  }
+
+  row.appendChild(nameEl);
+  row.appendChild(contentEl);
+  box.appendChild(row);
+
+  // Trim to cap.
+  while (box.children.length > REACTION_HISTORY_MAX) {
+    box.removeChild(box.firstChild!);
+  }
+
+  // Auto-scroll, but only if the user is already near the bottom — if
+  // they scrolled up to read backlog we shouldn't yank them down.
+  const nearBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 60;
+  if (nearBottom) box.scrollTop = box.scrollHeight;
 }
 
 gameOverBtn.addEventListener('click', () => {

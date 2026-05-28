@@ -2612,4 +2612,249 @@ describe('UNO Client', () => {
     await ctx.close()
   })
 
+  // ── New TODO items ────────────────────────────────────────
+
+  // Item 5: non-creator should still see the draw-mode indicator
+  // (read-only) so they know what mode the game will use.
+  it('non-creator sees the draw-mode area as read-only', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE)
+    await pageB.goto(BASE)
+    const lobbyId = 'rmode-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    // Wait a little extra for the players-broadcast to settle on B.
+    await pageB.waitForTimeout(300)
+
+    // Creator sees the draw-mode area, NOT marked readonly.
+    const creatorReadonly = await pageA.evaluate(() => {
+      const el = document.getElementById('draw-mode-area')
+      return el && el.style.display !== 'none' && el.classList.contains('readonly')
+    })
+    expect(creatorReadonly).toBe(false)
+    const creatorVisible = await pageA.evaluate(() => {
+      const el = document.getElementById('draw-mode-area')
+      return el && el.style.display === 'flex'
+    })
+    expect(creatorVisible).toBe(true)
+
+    // Non-creator now also sees it but with the readonly class.
+    const nonCreatorVisible = await pageB.evaluate(() => {
+      const el = document.getElementById('draw-mode-area')
+      return el && el.style.display === 'flex'
+    })
+    expect(nonCreatorVisible).toBe(true)
+    const nonCreatorReadonly = await pageB.evaluate(() => {
+      const el = document.getElementById('draw-mode-area')
+      return el && el.classList.contains('readonly')
+    })
+    expect(nonCreatorReadonly).toBe(true)
+    await pageA.close(); await pageB.close()
+  })
+
+  // Item 7: turn-order pills now include cardCount and a self marker.
+  it('turn-order pills show name + count and mark self', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'tord-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // Each pill should contain name and count children.
+    const pillStructure = await pageA.evaluate(() => {
+      const pills = Array.from(document.querySelectorAll('.turn-order-pill'))
+      return pills.map(p => ({
+        hasName: !!p.querySelector('.turn-order-name'),
+        hasCount: !!p.querySelector('.turn-order-count'),
+        isSelf: p.classList.contains('self'),
+      }))
+    })
+    expect(pillStructure.length).toBe(2)
+    expect(pillStructure.every(p => p.hasName && p.hasCount)).toBe(true)
+    // Exactly one pill is marked self on each tab.
+    expect(pillStructure.filter(p => p.isSelf).length).toBe(1)
+
+    await pageA.close(); await pageB.close()
+  })
+
+  // Item 10: ESC closes the rules modal.
+  it('ESC closes rules and about modals', { timeout: 30000 }, async () => {
+    const page = await browser.newPage()
+    await page.goto(BASE)
+    await page.waitForSelector('#name')
+    // No need to join — both modals are reachable from the lobby.
+    await page.click('#rules-link')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('rules-overlay')
+      return el && !el.classList.contains('hidden')
+    })
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('rules-overlay')
+      return el && el.classList.contains('hidden')
+    }, { timeout: 3000 })
+
+    await page.click('#about-link')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('about-overlay')
+      return el && !el.classList.contains('hidden')
+    })
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => {
+      const el = document.getElementById('about-overlay')
+      return el && el.classList.contains('hidden')
+    }, { timeout: 3000 })
+    await page.close()
+  })
+
+  // Item 6: returning from spectator → win → rejoin a fresh lobby
+  // must NOT keep body.spectator class.
+  it('spectator state clears after game-over → rejoin', { timeout: 30000 }, async () => {
+    const page = await browser.newPage()
+    await page.goto(BASE)
+    await page.waitForSelector('#name')
+    // Force spectator state programmatically to simulate the full
+    // flow without having to set up a 3-player game.
+    await page.evaluate(() => {
+      isSpectating = true
+      document.body.classList.add('spectator')
+    })
+    expect(await page.evaluate(() => document.body.classList.contains('spectator'))).toBe(true)
+    // Now invoke resetGameState (the same path 'win' takes for
+    // spectators); the cleanup must clear the class.
+    await page.evaluate(() => resetGameState())
+    // resetGameState defers most work to rAF; wait one frame.
+    await page.waitForTimeout(100)
+    expect(await page.evaluate(() => document.body.classList.contains('spectator'))).toBe(false)
+    expect(await page.evaluate(() => isSpectating)).toBe(false)
+    await page.close()
+  })
+
+  // Item 11: reaction history pane records sent messages.
+  it('reaction history records sent emojis', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'rhist-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // A clicks the laugh emoji.
+    await pageA.click('.reaction-emoji[data-emoji="😂"]')
+    // Both A and B should have a row in their reaction-history pane.
+    await pageA.waitForFunction(() => {
+      const rows = document.querySelectorAll('#reaction-history .reaction-history-row')
+      return rows.length >= 1
+    }, { timeout: 5000 })
+    await pageB.waitForFunction(() => {
+      const rows = document.querySelectorAll('#reaction-history .reaction-history-row')
+      return rows.length >= 1
+    }, { timeout: 5000 })
+    // A's row should be marked self.
+    const aSelf = await pageA.evaluate(() => {
+      const rows = document.querySelectorAll('#reaction-history .reaction-history-row')
+      return rows.length > 0 && rows[rows.length - 1].classList.contains('self')
+    })
+    expect(aSelf).toBe(true)
+    // B's row should NOT be marked self.
+    const bSelf = await pageB.evaluate(() => {
+      const rows = document.querySelectorAll('#reaction-history .reaction-history-row')
+      return rows.length > 0 && rows[rows.length - 1].classList.contains('self')
+    })
+    expect(bSelf).toBe(false)
+    await pageA.close(); await pageB.close()
+  })
+
+  // Item 12: not-playable per-card opacity should reset to 1 while
+  // the player is action-disabled (off-turn) so the dim doesn't stack
+  // with the container's dim.
+  it('off-turn not-playable cards do not double-dim', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'dim-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // Find the off-turn page.
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const offPage = (await isMyTurn(pageA)) ? pageB : pageA
+
+    // Wait until the off-page has rendered its hand.
+    await offPage.waitForFunction(() => {
+      return document.querySelectorAll('#player-hand .card').length > 0
+    }, { timeout: 5000 })
+
+    // For each non-playable card on the off page, computed opacity
+    // (effective) should be the container's opacity alone, not
+    // multiplied by an additional 0.7. We accept any value >= 0.5 as
+    // "not double-dimmed" (container is 0.6, double would be ~0.42).
+    const minCardOpacity = await offPage.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll('#player-hand .card'))
+      if (cards.length === 0) return -1
+      // Each card's own computed opacity should be 1 thanks to the
+      // override; the container has 0.6 inherited.
+      return Math.min(...cards.map(c => parseFloat(getComputedStyle(c).opacity)))
+    })
+    expect(minCardOpacity).toBe(1)
+    await pageA.close(); await pageB.close()
+  })
+
+  // Item 13: discard pile no longer dims off-turn.
+  it('discard pile stays at full opacity off-turn', { timeout: 30000 }, async () => {
+    const pageA = await browser.newPage()
+    const pageB = await browser.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'dpop-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const offPage = (await isMyTurn(pageA)) ? pageB : pageA
+    const opacity = await offPage.evaluate(() => {
+      const el = document.getElementById('discard-pile')
+      return el ? parseFloat(getComputedStyle(el).opacity) : 0
+    })
+    expect(opacity).toBe(1)
+    await pageA.close(); await pageB.close()
+  })
+
 })

@@ -286,6 +286,12 @@ const disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const sessions = new Map<string, SessionData>();
 const deferTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// Per-lobby short-grace timer that aborts an AI-only game when its last
+// human disconnected and didn't return within ALL_HUMANS_GONE_GRACE_MS.
+// Keyed by lobby id so a disconnect/reconnect cycle on the SAME human
+// just clears+reschedules; multiple humans disconnecting in sequence
+// each just refresh this single timer.
+const allHumansGoneTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 // Per-lobby turn-timeout state. The authoritative timer lives on the server
 // (Node.js timers are not throttled) — clients only display the countdown
@@ -575,6 +581,8 @@ function broadcastGameAborted(lobbyId: string, excludePlayerId: string): void {
   if (!lobby) return;
 
   resetTurnTimerState(lobbyId);
+  const ahg = allHumansGoneTimers.get(lobbyId);
+  if (ahg) { clearTimeout(ahg); allHumansGoneTimers.delete(lobbyId); }
   broadcastToLobby(lobbyId, { action: 'game_aborted' }, excludePlayerId);
 
   for (const [client, meta] of clients) {
@@ -1462,6 +1470,13 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           reconnectTimers.delete(existingPlayer.id);
           existingPlayer.reconnectDeadline = null;
           existingPlayer.disconnected = false;
+          // Cancel the all-humans-gone abort timer if this reconnect
+          // restored a human to the lobby.
+          const ahgT = allHumansGoneTimers.get(session.lobbyId);
+          if (ahgT) {
+            clearTimeout(ahgT);
+            allHumansGoneTimers.delete(session.lobbyId);
+          }
           const deferKey = existingPlayer.id;
           const deferTimer = deferTimers.get(deferKey);
           if (deferTimer) { clearTimeout(deferTimer); deferTimers.delete(deferKey); }
@@ -1857,6 +1872,40 @@ function processClose(_ws: WebSocket, metadata: ClientMetadata): void {
   if (lobby.game.started) {
     broadcastGameUpdate(metadata.lobbyId!);
   }
+
+  // If the LAST real player just disconnected, the lobby is now AI-only
+  // (or empty). Without intervention the disconnect timer waits a full
+  // RECONNECT_DEADLINE_MS (15s) before tearing down — which leaves the
+  // lobby running with only AI players and no human supervisor.
+  // Schedule a SHORT abort timer here that fires unless the human
+  // reconnects in the next few seconds. This is shorter than the
+  // normal disconnect window because nobody else needs to reconnect —
+  // either the same human refreshes back in, or the game is over.
+  if (lobby.game.started) {
+    const realActive = lobby.players.filter(p => !p.isAI && !p.disconnected);
+    if (realActive.length === 0) {
+      // Window: long enough for a page refresh to complete the WS
+      // handshake and `reconnect` send (~1-2s usual), short enough
+      // that an AI-only lobby doesn't run amok.
+      const ALL_HUMANS_GONE_GRACE_MS = 4000;
+      const lobbyId = metadata.lobbyId!;
+      const prevAbort = allHumansGoneTimers.get(lobbyId);
+      if (prevAbort) clearTimeout(prevAbort);
+      const abortTimer = setTimeout(() => {
+        allHumansGoneTimers.delete(lobbyId);
+        // Re-check: maybe somebody reconnected in the grace window.
+        const lobbyNow = lobbies.get(lobbyId);
+        if (!lobbyNow || !lobbyNow.game.started) return;
+        const stillNoHumans = lobbyNow.players.filter(p => !p.isAI && !p.disconnected).length === 0;
+        if (stillNoHumans) {
+          serverLog(`all-humans-gone abort fires in ${lobbyId.slice(0, 8)}`);
+          broadcastGameAborted(lobbyId, '');
+        }
+      }, ALL_HUMANS_GONE_GRACE_MS);
+      allHumansGoneTimers.set(lobbyId, abortTimer);
+    }
+  }
+
   const reconnectTimer = setTimeout(() => {
     reconnectTimers.delete(player.id);
     if (!player.disconnected) return;

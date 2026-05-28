@@ -376,3 +376,89 @@ describe('Lobby ID normalization', () => {
     a.close(); b.close()
   })
 })
+
+
+describe('All-humans-gone abort', () => {
+  // When the LAST real player leaves an in-flight game without a
+  // proper `leave`, the lobby used to sit there with only AI players
+  // for the full RECONNECT_DEADLINE_MS (15s) before the disconnect
+  // timer cleaned up. The fix schedules a short ALL_HUMANS_GONE
+  // grace so the game ends quickly when nobody can supervise it.
+  it('aborts an AI-only lobby a few seconds after the last human disconnects', async () => {
+    const lobbyId = 'allgone-' + Date.now()
+    const a = await openClient()
+    const b = await openClient()
+    await a.next('init'); await b.next('init')
+    a.send({ action: 'join', name: 'Human', lobbyId })
+    await a.next('players')
+    b.send({ action: 'join', name: 'Other', lobbyId })
+    await a.next('players'); await b.next('players')
+    a.send({ action: 'ready' }); await a.next('players'); await b.next('players')
+    b.send({ action: 'ready' }); await a.next('players'); await b.next('players')
+    await a.next('start'); await b.next('start')
+
+    // Both humans drop their sockets. No `leave` action — server has
+    // to detect the all-humans-gone state on disconnect.
+    a.close()
+    b.close()
+    // The defer-close handler waits RECONNECT_DEFER_MS (500ms) before
+    // marking each player as disconnected; then the all-humans-gone
+    // grace fires ~4s later. Total: well under 6s.
+    await new Promise(r => setTimeout(r, 6500))
+
+    // No way to assert via the now-closed sockets — instead, a NEW
+    // client trying to join the same lobby should NOT find the
+    // started game running (lobby has been wiped).
+    const c = await openClient()
+    await c.next('init')
+    c.send({ action: 'join', name: 'Fresh', lobbyId })
+    const players = await c.next('players')
+    // If the abort fired, the lobby was wiped and Fresh becomes the
+    // creator of a brand-new lobby of the same id.
+    expect(players.players.length).toBe(1)
+    expect(players.players[0].name).toBe('Fresh')
+    expect(players.players[0].isCreator).toBe(true)
+    c.close()
+  }, 15000)
+
+  // The grace window must not abort if the human reconnects within it
+  // (the common refresh-the-page case).
+  it('does NOT abort when the human reconnects within the grace window', async () => {
+    const lobbyId = 'allgone-rec-' + Date.now()
+    const a = await openClient()
+    const b = await openClient()
+    await a.next('init'); await b.next('init')
+    a.send({ action: 'join', name: 'Reconnector', lobbyId })
+    await a.next('players')
+    b.send({ action: 'join', name: 'Buddy', lobbyId })
+    await a.next('players'); await b.next('players')
+    a.send({ action: 'ready' }); await a.next('players'); await b.next('players')
+    b.send({ action: 'ready' }); await a.next('players'); await b.next('players')
+    const startA = await a.next('start'); await b.next('start')
+    const reconnectorId = startA.id
+
+    // Both humans drop. Within the grace window, reconnect tab A.
+    a.close()
+    b.close()
+    await new Promise(r => setTimeout(r, 1500))
+
+    const a2 = await openClient()
+    await a2.next('init')
+    a2.send({ action: 'reconnect', playerId: reconnectorId })
+    // First message after reconnect — could be init, then start frame.
+    await a2.next('init')
+    const start = await a2.next('start')
+    expect(start.action).toBe('start')
+
+    // Wait past the grace window — reconnect should have cancelled
+    // the abort, so the lobby is still alive.
+    await new Promise(r => setTimeout(r, 4500))
+    // A new spectator joining should see the game still in progress.
+    const spec = await openClient()
+    await spec.next('init')
+    spec.send({ action: 'join', name: 'NewObserver', lobbyId })
+    const msg = await spec.next()
+    expect(msg.action).toMatch(/^(spectate_offer|error)$/)
+    a2.close(); spec.close()
+  }, 20000)
+})
