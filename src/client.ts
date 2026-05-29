@@ -1014,6 +1014,13 @@ function connect(): void {
         updateTurnIndicator();
         const _btn0 = getLeaveSpectateBtn(); if (_btn0) _btn0.style.display = isSpectating ? '' : 'none';
         document.body.classList.toggle('spectator', isSpectating);
+        // Entering the game swaps out the (short) lobby DOM for the
+        // (taller) game DOM. The browser's scroll-anchoring can leave the
+        // viewport pinned to the bottom of the new layout, hiding the
+        // turn indicator and discard pile until the user manually scrolls
+        // up. Reset to the top once layout settles so the game always
+        // opens at the natural starting position.
+        requestAnimationFrame(() => window.scrollTo(0, 0));
         break;
 
       case 'update':
