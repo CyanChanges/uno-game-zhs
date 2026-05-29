@@ -660,26 +660,63 @@ h1 {
     border-radius: 3px;
 }
 
-/* Turn order indicator */
+/* Turn order indicator (legacy strip — kept hidden via JS; see
+   updateTurnIndicator). The merged design renders order in
+   #opponent-hands with .order-arrow elements between cards. */
 #turn-order {
-    display: flex;
-    align-items: center;
-    /* Sticky like the indicator above so the player order + card
-       counts remain visible while scrolling. Stack just below the
-       turn-indicator. */
-    position: sticky;
-    top: 80px;
-    z-index: 49;
-    background: rgba(30, 30, 30, 0.85);
-    backdrop-filter: blur(6px);
-    border-radius: 12px;
-    padding: 6px 10px;
-    justify-content: center;
-    gap: 4px;
-    flex-wrap: wrap;
-    margin-bottom: 12px;
+    display: none;
 }
 
+/* Prominent direction arrow between player cards. Styled to clearly
+   carry the eye between adjacent #opponent-hands .player tiles. The
+   `display: inline-flex` + `align-self: center` keeps the arrow on
+   the same horizontal baseline as the player cards even when the row
+   wraps or cards have different heights. */
+.order-arrow {
+    display: inline-flex;
+    align-self: center;
+    align-items: center;
+    justify-content: center;
+    font-size: 2rem;
+    line-height: 1;
+    color: #667eea;
+    text-shadow: 0 0 6px rgba(102, 126, 234, 0.5);
+    user-select: none;
+    -webkit-user-select: none;
+    pointer-events: none;
+    margin: 0 4px;
+    /* Subtle pulse so direction changes catch the eye. */
+    animation: orderArrowPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes orderArrowPulse {
+    0%, 100% { transform: scale(1); opacity: 0.85; }
+    50% { transform: scale(1.18); opacity: 1; }
+}
+
+/* Self card in the merged turn-order row. Yellow ring so the user
+   can find themselves at a glance; self is also typically smaller
+   so it doesn't compete visually with opponent cards (whose card
+   counts the user actually needs to track). */
+#opponent-hands .player.self {
+    border-color: #ffd166 !important;
+    box-shadow: 0 0 0 2px rgba(255, 209, 102, 0.4),
+                0 4px 8px rgba(0, 0, 0, 0.2);
+    color: #ffd166;
+}
+
+#opponent-hands .player.self.active {
+    /* Combine the yellow ring with the active gradient so it's clear
+       it's both your card AND your turn. */
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: #ffd166;
+    border-color: #ffd166 !important;
+    box-shadow: 0 0 0 2px rgba(255, 209, 102, 0.7),
+                0 8px 16px rgba(102, 126, 234, 0.3);
+}
+
+/* Legacy turn-order-pill rules (kept for any tooling/snapshot reads
+   that still query them; the strip itself is hidden). */
 .turn-order-pill {
     padding: 2px 10px;
     border-radius: 12px;
@@ -708,23 +745,16 @@ h1 {
     text-decoration: line-through;
 }
 
-/* Self gets a colored ring so the user can spot themself in the
-   turn-order strip at a glance even when many tabs / many opponents
-   are around. */
 .turn-order-pill.self {
     border-color: #ffd166;
     color: #ffd166;
     font-weight: 600;
 }
 .turn-order-pill.self.current {
-    /* When it's the user's own turn, .current's gradient takes
-       precedence; we just thicken the outline. */
     box-shadow: 0 0 8px rgba(102, 126, 234, 0.4),
                 0 0 0 2px rgba(255, 209, 102, 0.6);
 }
 
-/* Name and count laid out inline; the count gets a small chip
-   appearance so it's visually distinct from the name. */
 .turn-order-name {
     margin-right: 6px;
 }
@@ -1147,13 +1177,24 @@ body.spectator #turn-indicator::after {
     transform: translateY(0);
 }
 
-/* Opponent Hands */
+/* Opponent Hands — also serves as the merged turn-order display.
+   Sticky at the top so the player ordering + card counts remain
+   visible while scrolling, taking over what the legacy #turn-order
+   strip used to do. */
 #opponent-hands {
     display: flex;
     justify-content: center;
-    gap: 20px;
+    gap: 12px;
     margin-bottom: 25px;
     flex-wrap: wrap;
+    align-items: center;
+    position: sticky;
+    top: 80px;
+    z-index: 49;
+    background: rgba(30, 30, 30, 0.85);
+    backdrop-filter: blur(6px);
+    border-radius: 16px;
+    padding: 10px 14px;
 }
 
 body.player-action-disabled #center-area {
@@ -1192,7 +1233,11 @@ body.player-action-disabled #draw-card:hover {
 /* Off-turn hand: keep the container at slight dim and SUPPRESS the
    per-card not-playable opacity so the two don't multiply (0.6 * 0.7
    = 0.42 was too dark). Each card's not-playable lift suppression
-   still applies on its own turn. */
+   still applies on its own turn. The container keeps the regular
+   default cursor so the horizontal scrollbar (in scroll-mode) stays
+   visually usable — a `not-allowed` cursor here would also paint over
+   the scrollbar gutter and read as "you can't even scroll", which is
+   not the intent. */
 body.player-action-disabled #player-hand {
     user-select: none;
     -webkit-user-select: none;
@@ -1200,15 +1245,28 @@ body.player-action-disabled #player-hand {
     cursor: default;
 }
 
+/* Off-turn cards: don't react to clicks, but show the regular pointer
+   instead of the disabled (not-allowed) cursor. The disabled affordance
+   is already conveyed by the dimmed container; layering a not-allowed
+   cursor on top is redundant and (per user feedback) feels punishing
+   when the user is just casually moving the mouse over their hand
+   while waiting their turn. The horizontal scrollbar belongs to the
+   container element so it remains interactive regardless of this
+   children-level pointer-events: none. */
 body.player-action-disabled #player-hand>* {
     pointer-events: none;
-    cursor: not-allowed;
+    cursor: default;
 }
 
 body.player-action-disabled #player-hand .card.not-playable {
     /* Reset the playability-based dim while we're already container-
        dimmed — otherwise opacity stacks. */
     opacity: 1;
+    /* And reset the not-allowed cursor too — `.card.not-playable` is
+       more specific than `body.player-action-disabled #player-hand>*`
+       so without this it wins and we'd still see the disabled cursor
+       on every card while it's not our turn. */
+    cursor: default;
 }
 
 #card-controls {
@@ -1217,24 +1275,28 @@ body.player-action-disabled #player-hand .card.not-playable {
 
 #opponent-hands .player {
     background: linear-gradient(135deg, #2d2d2d 0%, #1a1a1a 100%);
-    margin: 10px;
-    padding: 15px 20px;
+    margin: 4px;
+    padding: 10px 16px;
     border: 2px solid #374151;
-    border-radius: 15px;
+    border-radius: 12px;
     text-align: center;
     color: #e0e0e0;
     transition: all 0.3s ease;
-    min-width: 150px;
+    min-width: 120px;
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
     position: relative;
+    font-size: 0.95rem;
 }
 
 #opponent-hands .player.active {
     border-color: #667eea;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     color: white;
-    transform: translateY(-5px);
-    box-shadow: 0 8px 16px rgba(102, 126, 234, 0.3);
+    /* No translateY here — lifting only the active card makes the
+       merged turn-order row look visually crooked. Use a glow + ring
+       instead to draw the eye without breaking the baseline. */
+    box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.55),
+                0 8px 16px rgba(102, 126, 234, 0.35);
 }
 
 #opponent-hands .player.uno {
@@ -1442,8 +1504,9 @@ body.player-action-disabled #player-hand .card.not-playable {
     border-color: #f39c12;
     background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
     color: white;
-    transform: translateY(-5px);
-    box-shadow: 0 8px 16px rgba(243, 156, 18, 0.3);
+    /* No translateY — keeps the merged turn-order row baseline-aligned. */
+    box-shadow: 0 0 0 2px rgba(243, 156, 18, 0.55),
+                0 8px 16px rgba(243, 156, 18, 0.35);
 }
 
 #opponent-hands .player.disconnected,
@@ -1899,7 +1962,15 @@ body.player-action-disabled #player-hand .card.not-playable {
     border: 1px solid #374151;
     border-radius: 12px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-    min-width: 140px;
+    /* Wider min/preferred width so the state-info pane's longest rows
+       (e.g. "lobby" + a 12-char id) fit without being cropped by the
+       panel-body's hidden horizontal overflow. */
+    min-width: 200px;
+    /* Cap the panel so the buttons + state-info pane stay inside the
+       viewport on short screens. The body itself becomes scrollable. */
+    max-height: calc(100vh - 40px);
+    display: flex;
+    flex-direction: column;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
@@ -1923,7 +1994,7 @@ body.player-action-disabled #player-hand .card.not-playable {
 
 #dev-panel-toggle {
     font-size: 0.625rem;
-    transition: transform 0.2s;
+    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 #dev-panel.collapsed #dev-panel-toggle {
@@ -1935,17 +2006,80 @@ body.player-action-disabled #player-hand .card.not-playable {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    max-height: 600px;
-    overflow: hidden;
+    /* Use the panel's flex layout to fill remaining space and let the
+       body scroll when contents (buttons + state-info pane) exceed the
+       viewport-bounded panel height. The hard 600px cap previously
+       clipped the new state-info pane on short screens. */
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    /* Slow, smooth collapse — matches the chevron rotation. The
+       collapsed state animates max-height + opacity + padding so all
+       three reach the closed state in lock-step. `max-height` is
+       animatable (unlike `auto` height), and we set a value larger
+       than any reasonable panel content so it doesn't visibly clip
+       the open state. */
+    max-height: 80vh;
     opacity: 1;
-    transition: max-height 0.3s ease, padding 0.3s ease, opacity 0.25s ease;
+    transition: max-height 0.45s cubic-bezier(0.4, 0, 0.2, 1),
+                padding 0.45s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.4s ease;
+    /* Slim scrollbar so the panel doesn't look chunky on macOS-style
+       scrollbar themes. */
+    scrollbar-width: thin;
+    scrollbar-color: #667eea #2d2d2d;
+}
+
+/* Hide the scrollbar while the panel is collapsing/expanding — the
+   transition makes the scrollbar flash and feel jittery. The JS
+   handler adds `.animating` on the toggle and removes it on
+   transitionend (or after a safety timeout). The inner state-info
+   pane has its own scroll context so its scrollbar is unaffected. */
+#dev-panel.animating #dev-panel-body {
+    overflow: hidden;
+    scrollbar-width: none;
+}
+#dev-panel.animating #dev-panel-body::-webkit-scrollbar {
+    display: none;
+}
+#dev-panel.animating #dev-state-info {
+    overflow: hidden;
+    scrollbar-width: none;
+}
+#dev-panel.animating #dev-state-info::-webkit-scrollbar {
+    display: none;
+}
+
+#dev-panel-body::-webkit-scrollbar {
+    width: 6px;
+}
+#dev-panel-body::-webkit-scrollbar-track {
+    background: #2d2d2d;
+    border-radius: 3px;
+}
+#dev-panel-body::-webkit-scrollbar-thumb {
+    background: #667eea;
+    border-radius: 3px;
 }
 
 #dev-panel.collapsed #dev-panel-body {
+    /* Collapsed: shrink fully and zero out padding so the panel
+       reduces to just the header. max-height (animatable) drives the
+       slide; opacity + padding fade the contents in lock-step. */
     max-height: 0;
     padding-top: 0;
     padding-bottom: 0;
     opacity: 0;
+    overflow: hidden;
+}
+
+#dev-panel.collapsed {
+    /* When collapsed, the panel itself should resize to match just
+       the header — without this, max-height: calc(100vh - 40px) on
+       the panel keeps the panel tall and the body's max-height: 0
+       just leaves an empty box. */
+    max-height: none;
 }
 
 .dev-btn {
@@ -2063,6 +2197,137 @@ footer a:hover {
     color: #fff;
     box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.35);
     animation: turnTimerCritical 0.9s ease-in-out infinite;
+}
+
+/* In-game status strip — shows the current draw mode and any pending
+   chain count so the rules of the moment are always one glance away.
+   Lives between #opponent-hands and #center-area. */
+#game-status {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin: 0 0 12px;
+    flex-wrap: wrap;
+}
+
+.game-status-pill {
+    padding: 4px 12px;
+    border-radius: 14px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    background: rgba(45, 55, 72, 0.85);
+    color: #e0e0e0;
+    border: 1px solid #374151;
+    backdrop-filter: blur(4px);
+    white-space: nowrap;
+    transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+    cursor: help;
+}
+
+.game-status-pill.hidden {
+    display: none;
+}
+
+/* Mode pill colors: chain mode uses the brand purple-blue gradient,
+   direct mode gets a calm grey-green. */
+.game-status-pill.mode-chain {
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.85) 0%, rgba(118, 75, 162, 0.85) 100%);
+    border-color: #667eea;
+    color: #fff;
+}
+
+.game-status-pill.mode-direct {
+    background: linear-gradient(135deg, rgba(72, 187, 120, 0.85) 0%, rgba(56, 161, 105, 0.85) 100%);
+    border-color: #48bb78;
+    color: #fff;
+}
+
+/* Active chain pill: red + pulse when penalty is pending so the
+   urgency reads at a glance. */
+.game-status-pill.chain {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.92) 0%, rgba(220, 38, 38, 0.92) 100%);
+    border-color: #ef4444;
+    color: #fff;
+    animation: chainPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes chainPulse {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
+    }
+    50% {
+        box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+    }
+}
+
+/* Dev panel state-info pane: sticky at the top of the panel body so
+   the live game/lobby state is always in sight even when the buttons
+   list is scrolled. Capped at ~40% of the panel body height so it
+   can't push the buttons off-screen on short windows; when the rows
+   exceed that cap, the pane scrolls inside its own box. */
+#dev-state-info {
+    position: sticky;
+    top: -8px; /* counteract the panel-body's 8px top padding */
+    margin: -8px -8px 4px -8px;
+    padding: 8px 10px;
+    z-index: 1;
+    background: #111827;
+    border-bottom: 1px solid #374151;
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.7rem;
+    color: #cbd5e1;
+    line-height: 1.5;
+    /* Cap so the pane never eats the whole panel: 40% of the panel's
+       max viewport height (80vh) → ~32vh. The buttons below always
+       have at least 60% of the panel height available. */
+    max-height: 32vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #667eea #111827;
+}
+
+#dev-state-info::-webkit-scrollbar {
+    width: 6px;
+}
+#dev-state-info::-webkit-scrollbar-track {
+    background: #111827;
+}
+#dev-state-info::-webkit-scrollbar-thumb {
+    background: #667eea;
+    border-radius: 3px;
+}
+
+#dev-state-info:empty {
+    display: none;
+}
+
+#dev-state-info .dev-state-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+#dev-state-info .dev-state-key {
+    color: #94a3b8;
+}
+
+#dev-state-info .dev-state-val {
+    color: #f1f5f9;
+    text-align: right;
+    overflow-wrap: anywhere;
+}
+
+/* Dev pause: distinct, non-urgent slate look so it's obvious the
+   countdown is intentionally frozen rather than just slow. */
+#turn-timer.paused {
+    background: rgba(148, 163, 184, 0.85);
+    color: #1e1e1e;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+    animation: none;
+    font-weight: 700;
 }
 
 @keyframes turnTimerCritical {

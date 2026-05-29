@@ -43,6 +43,14 @@
             <h3 id="turn-text">等待游戏开始...</h3>
         </div>
         <div id="opponent-hands"></div>
+        <!-- In-game status strip: shows the active draw mode and any
+             pending chain count. Lives between opponent-hands and the
+             center action area so it sits in the natural eye-path
+             above the discard pile. -->
+        <div id="game-status">
+            <span id="game-status-mode" class="game-status-pill" data-tooltip="加牌模式（房主在大厅设置）"></span>
+            <span id="game-status-chain" class="game-status-pill chain hidden" data-tooltip="当前累计的链式加牌张数；下一位玩家必须接 +2/+4 或被迫抽牌"></span>
+        </div>
         <div id="center-area">
             <div id="action-buttons">
                 <button id="draw-card" title="键盘快捷键：D 或 Space">抽牌</button>
@@ -120,6 +128,11 @@
     <div id="dev-panel">
         <div id="dev-panel-header">DEV <span id="dev-panel-toggle">▼</span></div>
         <div id="dev-panel-body">
+            <!-- Live state info panel. Pinned at the top of the dev
+                 panel so the dev / debugger can see lobby-and-game
+                 state at a glance without scrolling past all the
+                 mutation buttons first. -->
+            <div id="dev-state-info" aria-live="polite"></div>
             <button class="dev-btn" data-action="dev_add_cards" data-count="1">+1 牌</button>
             <button class="dev-btn" data-action="dev_add_cards" data-count="5">+5 牌</button>
             <button class="dev-btn" data-action="dev_add_all_cards">全部牌</button>
@@ -130,6 +143,7 @@
             <button class="dev-btn" data-action="dev_set_chain" data-count="2">链 +2</button>
             <button class="dev-btn" data-action="dev_set_chain" data-count="6">链 +6</button>
             <button class="dev-btn" data-action="dev_set_chain" data-count="0">清链</button>
+            <button class="dev-btn" data-action="dev_toggle_turn_timer" id="dev-toggle-timer-btn">暂停计时</button>
             <button class="dev-btn" id="dev-disconnect-btn" data-action="dev_disconnect">断开</button>
             <button class="dev-btn" data-action="dev_export_state">导出状态</button>
             <button class="dev-btn call-win-btn" data-action="dev_call_win">🏆 胜利</button>

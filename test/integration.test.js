@@ -322,6 +322,52 @@ describe('Turn timeout broadcast (task #5)', () => {
 })
 
 describe('Server validates dev events (task #8)', () => {
+  it('dev_toggle_turn_timer pauses and resumes the active turn timer', async () => {
+    // Pause: the broadcast `update` flips `turnTimerPaused: true` and
+    // the deadline stops advancing while paused. Resume: re-arms with
+    // the remaining time so the user gets the time-back-when-paused.
+    const { a, b, startA } = await startTwoPlayerGame('dev-pause-' + Date.now())
+    const turnSocket = whoseTurn(startA, a, b)
+    const initialDeadline = startA.turnDeadline
+    expect(typeof initialDeadline).toBe('number')
+
+    // Pause.
+    turnSocket.send({ action: 'dev_toggle_turn_timer' })
+    const pauseUpdate = await turnSocket.next('update')
+    expect(pauseUpdate.turnTimerPaused).toBe(true)
+
+    // Wait long enough that an unpaused timer's deadline would change.
+    await new Promise(r => setTimeout(r, 350))
+
+    // Resume.
+    turnSocket.send({ action: 'dev_toggle_turn_timer' })
+    const resumeUpdate = await turnSocket.next('update')
+    expect(resumeUpdate.turnTimerPaused).toBe(false)
+    // The new deadline should be roughly Date.now() + remaining (where
+    // remaining was captured at pause). It must be LATER than the
+    // initial deadline by approximately the time spent paused.
+    expect(typeof resumeUpdate.turnDeadline).toBe('number')
+    expect(resumeUpdate.turnDeadline).toBeGreaterThan(initialDeadline + 200)
+
+    a.close(); b.close()
+  })
+
+  it('dev_toggle_turn_timer is a no-op when there is no active timer', async () => {
+    // Joining a lobby without starting a game means no timer exists.
+    // The handler should bail without crashing or sending an error.
+    const lobbyId = 'devpauseno-' + Date.now()
+    const a = await openClient()
+    await a.next('init')
+    a.send({ action: 'join', name: 'Alice', lobbyId })
+    await a.next('players')
+    a.send({ action: 'dev_toggle_turn_timer' })
+    // GAME_NOT_STARTED — handled before the timer-lookup branch.
+    const err = await a.next('error')
+    expect(err.action).toBe('error')
+    expect(err.errorKey).toBe('GAME_NOT_STARTED')
+    a.close()
+  })
+
   it('dev_set_top before game start is rejected', async () => {
     // dev_set_top before a started game should yield a GAME_NOT_STARTED
     // error rather than silently doing anything.

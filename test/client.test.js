@@ -360,8 +360,14 @@ describe('UNO Client', () => {
       return el && el.style.display !== 'none'
     }, { timeout: 10000 })
 
-    // A should see B's card count initially
-    const initialDisplay = await pageA.$eval('#opponent-hands .player', el => el.textContent)
+    // A should see B's card count initially. With the merged turn-order
+    // layout, self (Alice) is also in #opponent-hands, so query for the
+    // opponent (Bob) by data-player-id rather than taking [0].
+    const initialDisplay = await pageA.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll('#opponent-hands .player'))
+      const opp = cards.find(c => !c.classList.contains('self'))
+      return opp ? opp.textContent : ''
+    })
     expect(initialDisplay).toMatch(/（\d+ 张牌）/)
 
     // B closes page (disconnect)
@@ -371,14 +377,20 @@ describe('UNO Client', () => {
     const bobId = await pageB.evaluate(() => sessionStorage.getItem('unoPlayerId'))
     await pageB.close()
 
-    // Wait for A to see B as disconnected (processClose fires)
+    // Wait for A to see B as disconnected (processClose fires) — the
+    // disconnected card is the non-self opponent.
     await pageA.waitForFunction(() => {
-      const items = document.querySelectorAll('#opponent-hands .player')
-      return items.length >= 1 && items[0].classList.contains('disconnected')
+      const cards = Array.from(document.querySelectorAll('#opponent-hands .player'))
+      const opp = cards.find(c => !c.classList.contains('self'))
+      return !!opp && opp.classList.contains('disconnected')
     }, { timeout: 10000 })
 
     // After disconnect, A should still see B's card count (game update from processClose)
-    const disconnectedDisplay = await pageA.$eval('#opponent-hands .player', el => el.textContent)
+    const disconnectedDisplay = await pageA.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll('#opponent-hands .player'))
+      const opp = cards.find(c => !c.classList.contains('self'))
+      return opp ? opp.textContent : ''
+    })
     expect(disconnectedDisplay).toMatch(/（\d+ 张牌）/)
 
     // B2: open new page and manually trigger reconnect
@@ -401,17 +413,16 @@ describe('UNO Client', () => {
 
     // A should see B's card count after reconnect (game update from reconnect handler)
     await pageA.waitForFunction(() => {
-      const items = document.querySelectorAll('#opponent-hands .player')
-      for (let i = 0; i < items.length; i++) {
-        const text = items[i].textContent || ''
-        if (text.includes('张牌') && !items[i].classList.contains('disconnected')) {
-          return true
-        }
-      }
-      return false
+      const cards = Array.from(document.querySelectorAll('#opponent-hands .player'))
+      const opp = cards.find(c => !c.classList.contains('self'))
+      return !!opp && (opp.textContent || '').includes('张牌') && !opp.classList.contains('disconnected')
     }, { timeout: 10000 })
 
-    const reconnectedDisplay = await pageA.$eval('#opponent-hands .player', el => el.textContent)
+    const reconnectedDisplay = await pageA.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll('#opponent-hands .player'))
+      const opp = cards.find(c => !c.classList.contains('self'))
+      return opp ? opp.textContent : ''
+    })
     expect(reconnectedDisplay).toMatch(/（\d+ 张牌）/)
 
     await pageA.close()
@@ -463,16 +474,17 @@ describe('UNO Client', () => {
       return el && el.style.display !== 'none'
     }, { timeout: 10000 })
 
-    // Check turn-order element exists with player names
+    // The turn-order is now merged into #opponent-hands player cards
+    // with prominent .order-arrow elements between them.
     const orderText = await pageA.evaluate(() => {
-      const el = document.getElementById('turn-order')
+      const el = document.getElementById('opponent-hands')
       return el ? el.textContent : null
     })
     expect(orderText).toBeTruthy()
     expect(orderText).toContain('Alice')
     expect(orderText).toContain('Bob')
-    // Should show direction arrow
-    expect(orderText).toContain('▸')
+    // Should show direction arrow (▶ or ◀, the prominent merged arrow)
+    expect(orderText).toMatch(/[▶◀]/)
 
     await pageA.close()
     await pageB.close()
@@ -619,10 +631,11 @@ describe('UNO Client', () => {
       return el && el.style.display !== 'none'
     }, { timeout: 5000 })
 
-    // Verify B and C see only 2 players in turn order
+    // Verify B and C see only 2 players in the merged turn-order
+    // (now rendered as #opponent-hands .player cards).
     const bPlayerCount = await pageB.evaluate(() => {
-      const pills = document.querySelectorAll('.turn-order-pill')
-      return pills.length
+      const cards = document.querySelectorAll('#opponent-hands .player')
+      return cards.length
     })
     expect(bPlayerCount).toBe(2)
 
@@ -731,9 +744,9 @@ describe('UNO Client', () => {
     })
     expect(discardVisible).toBe(true)
 
-    // B should see turn order
+    // B should see turn order (now in the merged opponent-hands).
     const orderText = await pageB.evaluate(() => {
-      const el = document.getElementById('turn-order')
+      const el = document.getElementById('opponent-hands')
       return el ? el.textContent : ''
     })
     expect(orderText).toBeTruthy()
@@ -1205,10 +1218,11 @@ describe('UNO Client', () => {
     })
     expect(bInGame).toBe(true)
 
-    // Turn order should show 2 players (Bob + AI)
+    // Turn order should show 2 players (Bob + AI) — merged into
+    // #opponent-hands .player cards.
     const playerCount = await pageB.evaluate(() => {
-      const pills = document.querySelectorAll('.turn-order-pill')
-      return pills.length
+      const cards = document.querySelectorAll('#opponent-hands .player')
+      return cards.length
     })
     expect(playerCount).toBe(2)
 
@@ -1371,8 +1385,13 @@ describe('UNO Client', () => {
       await page.click('#cancel-wild-btn')
       await page.waitForTimeout(500)
       const afterCancelY = await page.evaluate(() => window.scrollY)
-      // Should be near 500 (manual scroll pos), not back to initial
-      expect(Math.abs(afterCancelY - 500)).toBeLessThan(200)
+      // Should remain near the user's manual scroll position (500), not
+      // jump all the way back to initialY. The page can settle a few
+      // hundred px off due to layout shifts after the picker hides
+      // (e.g. sticky elements re-flowing); what matters is we didn't
+      // snap back to the auto-scroll target.
+      expect(Math.abs(afterCancelY - 500)).toBeLessThan(300)
+      expect(Math.abs(afterCancelY - initialY)).toBeGreaterThan(50)
     }
 
     await page.close()
@@ -2655,8 +2674,11 @@ describe('UNO Client', () => {
     await pageA.close(); await pageB.close()
   })
 
-  // Item 7: turn-order pills now include cardCount and a self marker.
-  it('turn-order pills show name + count and mark self', { timeout: 30000 }, async () => {
+  // Merged turn-order: each #opponent-hands .player card shows the
+  // player's name + (N 张牌) count, the self card has the .self class
+  // for the yellow ring, and the .order-arrow elements appear between
+  // cards. Two-player game has one .order-arrow.
+  it('turn-order cards show name + count and mark self', { timeout: 30000 }, async () => {
     const pageA = await browser.newPage()
     const pageB = await browser.newPage()
     await pageA.goto(BASE); await pageB.goto(BASE)
@@ -2671,19 +2693,22 @@ describe('UNO Client', () => {
       return el && el.style.display !== 'none'
     }, { timeout: 10000 })
 
-    // Each pill should contain name and count children.
-    const pillStructure = await pageA.evaluate(() => {
-      const pills = Array.from(document.querySelectorAll('.turn-order-pill'))
-      return pills.map(p => ({
-        hasName: !!p.querySelector('.turn-order-name'),
-        hasCount: !!p.querySelector('.turn-order-count'),
-        isSelf: p.classList.contains('self'),
-      }))
+    const layout = await pageA.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll('#opponent-hands .player'))
+      const arrows = Array.from(document.querySelectorAll('#opponent-hands .order-arrow'))
+      return {
+        cardCount: cards.length,
+        arrowCount: arrows.length,
+        selfCount: cards.filter(c => c.classList.contains('self')).length,
+        cardsHaveCount: cards.every(c => /\d+\s*张牌/.test(c.textContent || '')),
+        arrowText: arrows.map(a => a.textContent).join(''),
+      }
     })
-    expect(pillStructure.length).toBe(2)
-    expect(pillStructure.every(p => p.hasName && p.hasCount)).toBe(true)
-    // Exactly one pill is marked self on each tab.
-    expect(pillStructure.filter(p => p.isSelf).length).toBe(1)
+    expect(layout.cardCount).toBe(2)
+    expect(layout.arrowCount).toBe(1)
+    expect(layout.selfCount).toBe(1)
+    expect(layout.cardsHaveCount).toBe(true)
+    expect(layout.arrowText).toMatch(/[▶◀]/)
 
     await pageA.close(); await pageB.close()
   })
@@ -3086,6 +3111,458 @@ describe('UNO Client', () => {
       const btn = document.getElementById('card-layout-toggle')
       return btn && btn.textContent !== prev
     }, before, { timeout: 5000 })
+    await pageA.close(); await pageB.close()
+    await ctxA.close(); await ctxB.close()
+  })
+
+  // Highlight is one-shot: clicking the draw-mode "?" highlights the
+  // section once. Reopening the rules via the regular "规则" link or
+  // `?` shortcut should NOT re-highlight; otherwise every later open
+  // visually nags the user about a section they already saw.
+  it('draw-mode highlight is one-shot — does not repeat on next rules open', { timeout: 30000 }, async () => {
+    const ctx = await browser.newContext()
+    const page = await ctx.newPage()
+    await page.goto(BASE)
+    await page.fill('#name', 'Holly')
+    await page.fill('#lobby-id', 'rh-' + Date.now())
+    await page.click('#join')
+    await page.waitForFunction(() => {
+      const area = document.getElementById('draw-mode-area')
+      return area && getComputedStyle(area).display !== 'none'
+    }, { timeout: 5000 })
+
+    // Hook the section so we can count how many times the highlight
+    // class is RE-APPLIED. The CSS keyframes have iteration-count=2 so
+    // counting animationstart double-counts a single highlight. We
+    // instead observe class additions: applyPendingRulesHighlight does
+    // remove → reflow → add, which produces one observable add per
+    // actual call.
+    await page.evaluate(() => {
+      const sec = document.getElementById('rules-draw-mode-highlight')
+      if (!sec) return
+      window.__highlightStarts = 0
+      const obs = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          if (m.type === 'attributes' && m.attributeName === 'class') {
+            const had = (m.oldValue || '').includes('highlight-section')
+            const has = sec.classList.contains('highlight-section')
+            if (!had && has) window.__highlightStarts++
+          }
+        }
+      })
+      obs.observe(sec, { attributes: true, attributeOldValue: true, attributeFilter: ['class'] })
+    })
+
+    // 1st: click the "?" — opens rules and applies the highlight.
+    await page.click('#draw-mode-info')
+    await page.waitForFunction(() => window.__highlightStarts >= 1, { timeout: 5000 })
+    const after1 = await page.evaluate(() => window.__highlightStarts)
+    expect(after1).toBe(1)
+
+    // Close rules IMMEDIATELY — i.e. before the 4s highlight animation
+    // (2 iterations × 2s) has had a chance to finish on its own. This
+    // is the user-reported repro: closing the dialog mid-flash and
+    // then re-opening rules via the regular "规则" link must NOT
+    // re-flash the section.
+    await page.click('#rules-close-btn')
+    await page.waitForFunction(() => {
+      const ov = document.getElementById('rules-overlay')
+      return ov && ov.classList.contains('hidden')
+    }, { timeout: 3000 })
+
+    // 2nd: open rules via the regular "规则" link — the highlight
+    // should NOT re-fire. Wait a beat to give a stray animation a
+    // chance to start, then assert the counter is unchanged.
+    await page.click('#rules-link')
+    await page.waitForFunction(() => {
+      const ov = document.getElementById('rules-overlay')
+      return ov && !ov.classList.contains('hidden')
+    }, { timeout: 3000 })
+    await page.waitForTimeout(700) // > the 300ms applyPending delay
+    const after2 = await page.evaluate(() => window.__highlightStarts)
+    expect(after2).toBe(after1)
+
+    await page.close()
+    await ctx.close()
+  })
+
+  // Off-turn cards: cursor on each card must be 'default' (not
+  // 'not-allowed'), and pointer-events on the cards is 'none' so they
+  // can't be clicked. The hand container keeps its own cursor so the
+  // scrollbar still reads as interactive.
+  it('off-turn hand cards have default cursor (not disabled)', { timeout: 30000 }, async () => {
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'cur-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const offPage = (await isMyTurn(pageA)) ? pageB : pageA
+    // Wait for hand to render and the off-turn body class to be set.
+    await offPage.waitForFunction(() => {
+      const card = document.querySelector('#player-hand .card')
+      return !!card && document.body.classList.contains('player-action-disabled')
+    }, { timeout: 5000 })
+
+    const result = await offPage.evaluate(() => {
+      const card = document.querySelector('#player-hand .card')
+      const hand = document.getElementById('player-hand')
+      if (!card || !hand) return null
+      const cardCs = getComputedStyle(card)
+      const handCs = getComputedStyle(hand)
+      return {
+        cardCursor: cardCs.cursor,
+        cardPointerEvents: cardCs.pointerEvents,
+        handCursor: handCs.cursor,
+      }
+    })
+    expect(result).not.toBeNull()
+    expect(result.cardCursor).toBe('default')
+    expect(result.cardPointerEvents).toBe('none')
+    expect(result.handCursor).toBe('default')
+
+    await pageA.close(); await pageB.close()
+    await ctxA.close(); await ctxB.close()
+  })
+
+  // Sanity: opponent-hands row stays on the same horizontal baseline
+  // even when one of the cards has the .active class (current turn).
+  it('opponent-hands cards stay on the same baseline when one is active', { timeout: 30000 }, async () => {
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'baseline-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // At least one card should be marked .active (whoever's turn it is).
+    const tops = await pageA.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll('#opponent-hands .player'))
+      const arrows = Array.from(document.querySelectorAll('#opponent-hands .order-arrow'))
+      return {
+        cardTops: cards.map(c => Math.round(c.getBoundingClientRect().top)),
+        anyActive: cards.some(c => c.classList.contains('active')),
+        arrowCenters: arrows.map(a => {
+          const r = a.getBoundingClientRect()
+          return Math.round(r.top + r.height / 2)
+        }),
+        cardCenters: cards.map(c => {
+          const r = c.getBoundingClientRect()
+          return Math.round(r.top + r.height / 2)
+        }),
+      }
+    })
+    expect(tops.anyActive).toBe(true)
+    // All cards aligned on the same top within a couple of pixels.
+    const minTop = Math.min(...tops.cardTops)
+    const maxTop = Math.max(...tops.cardTops)
+    expect(maxTop - minTop).toBeLessThanOrEqual(2)
+    // Each arrow's vertical center sits roughly between the card
+    // centers (not above/below the row).
+    const minCenter = Math.min(...tops.cardCenters)
+    const maxCenter = Math.max(...tops.cardCenters)
+    for (const ac of tops.arrowCenters) {
+      expect(ac).toBeGreaterThanOrEqual(minCenter - 4)
+      expect(ac).toBeLessThanOrEqual(maxCenter + 4)
+    }
+
+    await pageA.close(); await pageB.close()
+    await ctxA.close(); await ctxB.close()
+  })
+
+  // In-game status strip: shows the current draw mode pill while the
+  // game is visible. The chain pill is hidden until a chain is active.
+  it('in-game status strip shows draw mode and hides chain pill by default', { timeout: 30000 }, async () => {
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'gs-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // After start, both pages should show the mode pill (default chain)
+    // and an empty/hidden chain pill.
+    const state = await pageA.evaluate(() => {
+      const wrap = document.getElementById('game-status')
+      const mode = document.getElementById('game-status-mode')
+      const chain = document.getElementById('game-status-chain')
+      return {
+        wrapVisible: wrap ? getComputedStyle(wrap).display !== 'none' : false,
+        modeText: mode ? mode.textContent : null,
+        modeHasChainClass: mode ? mode.classList.contains('mode-chain') : false,
+        chainHidden: chain ? chain.classList.contains('hidden') : true,
+      }
+    })
+    expect(state.wrapVisible).toBe(true)
+    expect(state.modeText).toBe('链式加牌')
+    expect(state.modeHasChainClass).toBe(true)
+    expect(state.chainHidden).toBe(true)
+
+    await pageA.close(); await pageB.close()
+    await ctxA.close(); await ctxB.close()
+  })
+
+  // The chain pill appears with the running count once a chain forms,
+  // and disappears when the count drops back to zero.
+  it('chain pill shows the pending count in chain mode', { timeout: 30000 }, async () => {
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'gsch-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // Force a chain via dev_set_chain (no actual play needed — we just
+    // exercise the broadcast → status pill path).
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const turnPage = (await isMyTurn(pageA)) ? pageA : pageB
+    await turnPage.evaluate(() => sendMessage({ action: 'dev_set_chain', count: 4 }))
+    await turnPage.waitForFunction(() => {
+      const chain = document.getElementById('game-status-chain')
+      return chain && !chain.classList.contains('hidden') && /\+4/.test(chain.textContent || '')
+    }, { timeout: 5000 })
+
+    // Clear the chain and the pill should hide again.
+    await turnPage.evaluate(() => sendMessage({ action: 'dev_set_chain', count: 0 }))
+    await turnPage.waitForFunction(() => {
+      const chain = document.getElementById('game-status-chain')
+      return chain && chain.classList.contains('hidden')
+    }, { timeout: 5000 })
+
+    await pageA.close(); await pageB.close()
+    await ctxA.close(); await ctxB.close()
+  })
+
+  // Dev state info pane: populated with lobby/game state once the game
+  // is running. Tests basic fields the developer cares about.
+  it('dev panel state info pane shows lobby and game state', { timeout: 30000 }, async () => {
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'devinfo-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const info = await pageA.evaluate(() => {
+      const pane = document.getElementById('dev-state-info')
+      return {
+        present: !!pane,
+        text: pane ? pane.textContent : '',
+      }
+    })
+    expect(info.present).toBe(true)
+    // Key labels we expect to find — robust against ordering changes.
+    expect(info.text).toContain('lobby')
+    expect(info.text).toContain('phase')
+    expect(info.text).toContain('drawMode')
+    expect(info.text).toContain('chain')
+    expect(info.text).toContain('turn')
+    expect(info.text).toContain('myHand')
+
+    await pageA.close(); await pageB.close()
+    await ctxA.close(); await ctxB.close()
+  })
+
+  // In-game status pills: draw mode pill always shown; chain pill only
+  // appears when there's a pending +N stack in chain mode.
+  it('in-game status pills show draw mode and pending chain', { timeout: 30000 }, async () => {
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'gstat-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // Mode pill should be visible and read "链式加牌" (default mode).
+    const initial = await pageA.evaluate(() => {
+      const mode = document.getElementById('game-status-mode')
+      const chain = document.getElementById('game-status-chain')
+      return {
+        modeVisible: !!mode && getComputedStyle(mode).display !== 'none',
+        modeText: mode ? mode.textContent : '',
+        modeIsChain: !!mode && mode.classList.contains('mode-chain'),
+        chainHidden: !!chain && chain.classList.contains('hidden'),
+      }
+    })
+    expect(initial.modeVisible).toBe(true)
+    expect(initial.modeText).toBe('链式加牌')
+    expect(initial.modeIsChain).toBe(true)
+    expect(initial.chainHidden).toBe(true)
+
+    // Force a pending chain via dev_set_chain on the active player; the
+    // chain pill should appear with "+N" content.
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const turnPage = (await isMyTurn(pageA)) ? pageA : pageB
+    await turnPage.evaluate(() => sendMessage({ action: 'dev_set_chain', count: 4 }))
+    await turnPage.waitForFunction(() => {
+      const c = document.getElementById('game-status-chain')
+      return c && !c.classList.contains('hidden') && /\+4/.test(c.textContent || '')
+    }, { timeout: 5000 })
+
+    await pageA.close(); await pageB.close()
+    await ctxA.close(); await ctxB.close()
+  })
+
+  // Off-turn .not-playable card cursor must be the regular default
+  // arrow, not 'not-allowed'. The earlier fix only set the children
+  // cursor on `body.player-action-disabled #player-hand > *`; the more
+  // specific `.card.not-playable` rule was overriding it back to
+  // 'not-allowed' off-turn.
+  it('off-turn .not-playable cards have default cursor too', { timeout: 30000 }, async () => {
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'curnp-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const offPage = (await isMyTurn(pageA)) ? pageB : pageA
+    await offPage.waitForFunction(() => {
+      const npCard = document.querySelector('#player-hand .card.not-playable')
+      return !!npCard && document.body.classList.contains('player-action-disabled')
+    }, { timeout: 5000 })
+
+    const result = await offPage.evaluate(() => {
+      const card = document.querySelector('#player-hand .card.not-playable')
+      return card ? getComputedStyle(card).cursor : null
+    })
+    expect(result).toBe('default')
+
+    await pageA.close(); await pageB.close()
+    await ctxA.close(); await ctxB.close()
+  })
+
+  // +N popup must attach to a player tile that survives the next
+  // updatePlayers rebuild. Earlier code spawned the popup BEFORE the
+  // rebuild, so #opponent-hands.innerHTML='' immediately yanked the
+  // popup back out and the user never saw it.
+  it('+N popup appears next to a player when chain penalty is applied', { timeout: 30000 }, async () => {
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    await pageA.goto(BASE); await pageB.goto(BASE)
+    const lobbyId = 'penalty-' + Date.now()
+    await pageA.fill('#name', 'Alice'); await pageA.fill('#lobby-id', lobbyId); await pageA.click('#join')
+    await pageA.waitForSelector('#players li')
+    await pageB.fill('#name', 'Bob'); await pageB.fill('#lobby-id', lobbyId); await pageB.click('#join')
+    await pageA.waitForFunction(() => document.querySelectorAll('#players li').length === 2)
+    await pageA.click('#ready'); await pageB.click('#ready')
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('game')
+      return el && el.style.display !== 'none'
+    }, { timeout: 10000 })
+
+    // Use dev_add_cards on the OFF player (server broadcasts an update;
+    // the chain-popup logic sees their cardCount go up by 4).
+    const isMyTurn = async (page) => await page.evaluate(() => {
+      const el = document.getElementById('turn-indicator')
+      return el ? el.classList.contains('my-turn') : false
+    })
+    const targetPage = (await isMyTurn(pageA)) ? pageB : pageA
+    const observer = (await isMyTurn(pageA)) ? pageA : pageB
+
+    // Dev_add_cards adds to the caller; have the off-page add 4 to
+    // themselves so observer (the active player) sees a +4 popup.
+    await targetPage.evaluate(() => sendMessage({ action: 'dev_add_cards', count: 4 }))
+
+    // The popup is appended to the player tile. Wait for a .penalty-popup
+    // to appear inside #opponent-hands.
+    await observer.waitForFunction(() => {
+      const popup = document.querySelector('#opponent-hands .penalty-popup')
+      return !!popup && /\+\d+/.test(popup.textContent || '')
+    }, { timeout: 5000 })
+
+    // Confirm the popup actually says +4 and is parented to a player tile.
+    const info = await observer.evaluate(() => {
+      const popup = document.querySelector('#opponent-hands .penalty-popup')
+      const parent = popup ? popup.parentElement : null
+      return {
+        text: popup ? popup.textContent : null,
+        parentIsPlayerTile: !!parent && parent.classList.contains('player'),
+      }
+    })
+    expect(info.text).toMatch(/\+\d+/)
+    expect(info.parentIsPlayerTile).toBe(true)
+
     await pageA.close(); await pageB.close()
     await ctxA.close(); await ctxB.close()
   })

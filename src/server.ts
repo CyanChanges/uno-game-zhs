@@ -318,6 +318,13 @@ interface TurnTimer {
   // deadline instead of resetting the countdown.
   turnPlayerId: string;
   turnSerial: number;
+  // Dev-only pause: when true, `timer` is null/cleared and `remainingMs`
+  // captures how much wall-clock time was left at pause. Resuming
+  // re-mints `deadline = Date.now() + remainingMs` and reschedules.
+  // Production code never sets this — the dev pause action is only
+  // exposed when isDev() is true.
+  paused?: boolean;
+  remainingMs?: number;
 }
 const turnTimers = new Map<string, TurnTimer>();
 const turnTokens = new Map<string, number>();
@@ -417,6 +424,7 @@ function broadcastPlayers(lobbyId: string): void {
     lobbyId: lobbyId,
     drawMode: lobby.game.drawMode,
     turnDeadline: lobby.game.started ? getTurnDeadline(lobbyId) : null,
+    turnTimerPaused: lobby.game.started ? isTurnTimerPaused(lobbyId) : false,
   };
   broadcastToLobby(lobbyId, message);
 }
@@ -680,6 +688,14 @@ function scheduleTurnTimeout(lobbyId: string): void {
     && snap.direction === lobby.game.direction;
 
   const existing = turnTimers.get(lobbyId);
+  // Dev pause: if the existing timer is paused for the same turn, leave
+  // it alone — broadcastGameUpdate calls scheduleTurnTimeout on every
+  // state change and we don't want that to silently revive a paused
+  // timer or mint a new deadline. The dev_toggle_turn_timer handler is
+  // the only thing that should resume.
+  if (sameTurn && existing && existing.paused) {
+    return;
+  }
   if (sameTurn && existing) {
     // Re-arm the timer against the existing absolute deadline — preserves
     // the wall-clock budget across reconnect / state-resync cycles.
@@ -734,6 +750,14 @@ function scheduleTurnTimeout(lobbyId: string): void {
 function getTurnDeadline(lobbyId: string): number | null {
   const t = turnTimers.get(lobbyId);
   return t ? t.deadline : null;
+}
+
+// Returns true when the active turn timer is paused (dev_toggle_turn_timer).
+// Clients use this to render a "暂停" badge instead of a live countdown so
+// the user can tell the auto-draw is intentionally on hold.
+function isTurnTimerPaused(lobbyId: string): boolean {
+  const t = turnTimers.get(lobbyId);
+  return !!(t && t.paused);
 }
 
 function onTurnTimeout(lobbyId: string, expectedPlayerId: string): void {
@@ -1098,6 +1122,7 @@ function broadcastGameUpdate(lobbyId: string): void {
   // begin their countdown immediately.
   scheduleTurnTimeout(lobbyId);
   const turnDeadline = getTurnDeadline(lobbyId);
+  const turnTimerPaused = isTurnTimerPaused(lobbyId);
 
   [...clients.keys()].forEach((client) => {
     const metadata = clients.get(client);
@@ -1114,6 +1139,7 @@ function broadcastGameUpdate(lobbyId: string): void {
         spectator: metadata.isSpectator || false,
         hand: player ? player.hand : [],
         turnDeadline,
+        turnTimerPaused,
       };
 
       client.send(JSON.stringify(message));
@@ -1398,7 +1424,7 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           if (!lobby) { ws.send(JSON.stringify(errorResponse('NOT_IN_LOBBY'))); return; }
           const creator = lobby.players.find(p => p.id === metadata.id);
           if (!creator || !creator.isCreator) {
-            ws.send(JSON.stringify(errorResponse('CREATOR_ONLY')));
+            ws.send(JSON.stringify(errorResponse('CREATOR_ONLY_DRAW_MODE')));
             return;
           }
           if (lobby.game.started) {
@@ -1508,6 +1534,7 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
                 drawingCount: rLobby!.game.drawingCount,
                 hand: player.hand,
                 turnDeadline: getTurnDeadline(session.lobbyId),
+                turnTimerPaused: isTurnTimerPaused(session.lobbyId),
               }));
             }
           } else {
@@ -1831,6 +1858,56 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           ws.send(JSON.stringify({ action: 'dev_state_export', log: stateLog }));
           return;
         }
+        case 'dev_toggle_turn_timer': {
+          // Toggle pause/resume the active turn timer for this lobby.
+          // Pausing freezes the deadline so the player isn't auto-drawn
+          // while we're poking at game state during dev / debugging;
+          // resuming re-arms the timer with the wall-clock time that
+          // was remaining at pause. Production builds disable the dev_*
+          // dispatcher entirely, so this can never run in prod.
+          const lobby = lobbies.get(metadata.lobbyId!);
+          if (!lobby) { ws.send(JSON.stringify(errorResponse('NOT_IN_LOBBY'))); return; }
+          if (!lobby.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
+          const t = turnTimers.get(metadata.lobbyId!);
+          if (!t) {
+            // Nothing to pause — likely an AI turn or no active timer.
+            return;
+          }
+          if (t.paused) {
+            // Resume: rebuild deadline + setTimeout.
+            const remaining = Math.max(0, t.remainingMs || 0);
+            const newToken = (turnTokens.get(metadata.lobbyId!) || 0) + 1;
+            turnTokens.set(metadata.lobbyId!, newToken);
+            const playerId = t.turnPlayerId;
+            const lobbyId = metadata.lobbyId!;
+            const timer = setTimeout(() => {
+              if (turnTokens.get(lobbyId) !== newToken) return;
+              turnTimers.delete(lobbyId);
+              onTurnTimeout(lobbyId, playerId);
+            }, remaining);
+            t.timer = timer;
+            t.token = newToken;
+            t.deadline = Date.now() + remaining;
+            t.paused = false;
+            t.remainingMs = undefined;
+            serverLog(`dev_toggle_turn_timer RESUME lobby=${lobbyId.slice(0, 8)} remaining=${remaining}ms`);
+          } else {
+            // Pause: clear the timer + remember remaining time.
+            const remaining = Math.max(0, t.deadline - Date.now());
+            clearTimeout(t.timer);
+            t.paused = true;
+            t.remainingMs = remaining;
+            // Bump the token so any in-flight stale fire is invalidated.
+            const newToken = (turnTokens.get(metadata.lobbyId!) || 0) + 1;
+            turnTokens.set(metadata.lobbyId!, newToken);
+            t.token = newToken;
+            serverLog(`dev_toggle_turn_timer PAUSE lobby=${metadata.lobbyId!.slice(0, 8)} remaining=${remaining}ms`);
+          }
+          // Broadcast updated turn state so all clients reflect the
+          // pause/resume in their countdown UIs.
+          broadcastGameUpdate(metadata.lobbyId!);
+          return;
+        }
         default:
           serverWarn('unhandled dev event', message);
       }
@@ -1999,6 +2076,7 @@ function handleLeave(lobbyId: string, playerId: string): void {
       turn: lobby.game.turn,
       lobbyId: lobbyId,
       turnDeadline: lobby.game.started ? getTurnDeadline(lobbyId) : null,
+      turnTimerPaused: lobby.game.started ? isTurnTimerPaused(lobbyId) : false,
     }, playerId);
 
     checkStartGame(lobbyId);

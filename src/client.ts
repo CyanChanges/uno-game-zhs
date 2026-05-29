@@ -69,6 +69,7 @@ interface ServerMessage {
   content?: string;
   log?: object[];
   turnDeadline?: number | null;
+  turnTimerPaused?: boolean;
 }
 
 let NAME_LENGTH_MIN = 2;
@@ -536,6 +537,11 @@ let drawingChain = 0;
 // is computed from `Date.now()` against this deadline. `null` means "no
 // active timeout" (e.g. AI turn, lobby state, game over).
 let turnDeadline: number | null = null;
+
+// Mirrors the server-side dev pause flag. While true, the countdown UI
+// freezes and shows a "暂停" badge instead of seconds, so users / dev
+// can tell the auto-draw timer is intentionally on hold.
+let turnTimerPaused: boolean = false;
 // Constant fetched from /constants. Falls back to a reasonable default so
 // the UI degrades gracefully if the fetch hasn't completed yet.
 let PLAY_TIMEOUT_MS = 30000;
@@ -624,7 +630,7 @@ function setTurnTimerText(text: string): void {
 function tickTurnCountdown(): void {
   if (turnDeadline === null) {
     setTurnTimerText('');
-    getTurnTimerEl().classList.remove('low', 'critical');
+    getTurnTimerEl().classList.remove('low', 'critical', 'paused');
     if (turnTimerRaf !== null) {
       window.cancelAnimationFrame(turnTimerRaf);
       turnTimerRaf = null;
@@ -632,6 +638,21 @@ function tickTurnCountdown(): void {
     if (turnTimerInterval !== null) {
       window.clearInterval(turnTimerInterval);
       turnTimerInterval = null;
+    }
+    return;
+  }
+  // Dev pause: server clamped the timer; freeze the displayed value so
+  // it doesn't tick towards 0 while paused. We still keep the timer-el
+  // mounted so the badge swap (paused → live) is smooth on resume.
+  if (turnTimerPaused) {
+    setTurnTimerText('暂停');
+    const el = getTurnTimerEl();
+    el.classList.remove('low', 'critical');
+    el.classList.add('paused');
+    // No further rAF tick while paused — resume will re-arm via update.
+    if (turnTimerRaf !== null) {
+      window.cancelAnimationFrame(turnTimerRaf);
+      turnTimerRaf = null;
     }
     return;
   }
@@ -647,6 +668,7 @@ function tickTurnCountdown(): void {
   // .low/.critical class is active. (The new CSS uses ::before to render
   // the parens around the value so the textContent stays just `Ns`.)
   const el = getTurnTimerEl();
+  el.classList.remove('paused');
   el.classList.toggle('critical', seconds <= 5);
   el.classList.toggle('low', seconds > 5 && seconds <= 10);
   turnTimerRaf = window.requestAnimationFrame(tickTurnCountdown);
@@ -944,6 +966,7 @@ function connect(): void {
         gameState = message.gameState || 0;
         drawingChain = message.drawingCount || 0;
         turnDeadline = (typeof message.turnDeadline === 'number') ? message.turnDeadline : null;
+        turnTimerPaused = !!message.turnTimerPaused;
         myLobbyId = message.lobbyId || null;
         store.set('unoPlayerId', myId!);
         store.set('unoInLobby', '1');
@@ -952,12 +975,15 @@ function connect(): void {
         updatePlayers(players, currentTurn);
         updateTurnIndicator();
         showLobbyInfo(message.lobbyId || '');
-        // Sync draw mode toggle
+        // Sync draw mode toggle + the in-game status pill source.
         if (message.drawMode) {
           const mode = message.drawMode;
+          currentDrawMode = mode === 'direct' ? 'direct' : 'chain';
           document.querySelectorAll('#draw-mode-toggle-box .mode-option').forEach(el => {
             el.classList.toggle('active', el.getAttribute('data-mode') === mode);
           });
+          updateGameStatusPills();
+          updateDevStateInfo();
         }
         break;
 
@@ -979,6 +1005,7 @@ function connect(): void {
         gameState = message.gameState || 0;
         drawingChain = message.drawingCount || 0;
         turnDeadline = (typeof message.turnDeadline === 'number') ? message.turnDeadline : null;
+        turnTimerPaused = !!message.turnTimerPaused;
         myHand = message.hand || [];
         updatePlayers(players, currentTurn);
         updateDiscardPile(message.discardPile || []);
@@ -999,18 +1026,24 @@ function connect(): void {
           document.body.classList.toggle('spectator', isSpectating);
         }
         clientLog('[update] myId =', myId, 'turn =', message.turn, 'players =', (message.players || []).map(p => ({ id: p.id, name: p.name })), 'current =', (message.players || [])[message.turn || 0] ? (message.players || [])[message.turn || 0].id : null);
-        // Diff card counts BEFORE we replace `players` with the new
-        // snapshot — any player whose count went UP just got dealt
-        // penalty cards (+N popup over their tile).
-        diffCardCountsForPenaltyPopup(players, message.players || []);
+        // Capture the per-player card-count deltas BEFORE replacing
+        // `players`. We can't spawn the popup yet — `updatePlayers`
+        // below clears and rebuilds #opponent-hands, which would
+        // immediately yank the popup out of the DOM. Save the deltas
+        // and re-attach after the rebuild.
+        const penaltyDeltas = computePenaltyDeltas(players, message.players || []);
         players = message.players || [];
         currentTurn = message.turn || 0;
         gameDirection = message.direction || 1;
         gameState = message.gameState || 0;
         drawingChain = message.drawingCount || 0;
         turnDeadline = (typeof message.turnDeadline === 'number') ? message.turnDeadline : null;
+        turnTimerPaused = !!message.turnTimerPaused;
         myHand = message.hand || [];
         updatePlayers(players, currentTurn);
+        // Now that the new player tiles exist, spawn the +N popups so
+        // they actually have a parent that survives the rebuild.
+        for (const [pid, delta] of penaltyDeltas) spawnPenaltyPopup(pid, delta);
         updateDiscardPile(message.discardPile || []);
         updateHand(myHand);
         applyCardLayout();
@@ -1199,59 +1232,129 @@ function updateTurnIndicator(): void {
   // animation frame after the tab refocuses will show the correct value.
   if (turnDeadline !== null && currentPlayer && !currentPlayer.isAI && !currentPlayer.disconnected) {
     startTurnCountdown();
+    // Force one tick immediately so the paused/live UI flips on the
+    // next state change without waiting for the rAF tick (which won't
+    // happen at all while paused).
+    tickTurnCountdown();
   } else {
     stopTurnCountdown();
     setTurnTimerText('');
   }
+  // Sync the dev panel toggle text with the server-known pause state.
+  // Players who don't have dev mode never see the button; for those
+  // who do, this keeps the label in sync with reality even after
+  // reconnects/spectator transitions.
+  const devToggleBtn = document.getElementById('dev-toggle-timer-btn');
+  if (devToggleBtn) {
+    devToggleBtn.textContent = turnTimerPaused ? '继续计时' : '暂停计时';
+  }
 
   // Build turn order display
+  // The merged design (see updatePlayers) renders the turn order as
+  // big player cards in #opponent-hands with prominent arrows between
+  // them. The legacy compact #turn-order pill strip used to live here;
+  // we keep the element around (hidden) so any leftover sticky-scroll
+  // or testing hook that looks it up still finds something, but no
+  // pills are emitted into it.
   let orderEl = document.getElementById('turn-order');
-  if (!orderEl) {
-    orderEl = document.createElement('div');
-    orderEl.id = 'turn-order';
-    opponentHandsDiv.insertAdjacentElement('beforebegin', orderEl);
-  }
-  orderEl.innerHTML = '';
-
-  for (let i = 0; i < players.length; i++) {
-    const p = players[i];
-
-    const pill = document.createElement('span');
-    pill.classList.add('turn-order-pill');
-    if (i === currentTurn) pill.classList.add('current');
-    if (p.isAI) pill.classList.add('ai');
-    if (p.disconnected) pill.classList.add('disconnected');
-    if (p.id === myId) pill.classList.add('self');
-
-    const nameEl = document.createElement('span');
-    nameEl.classList.add('turn-order-name');
-    nameEl.textContent = p.name;
-
-    const countEl = document.createElement('span');
-    countEl.classList.add('turn-order-count');
-    // For self, show the actual hand length we know about so the
-    // count updates eagerly on play (rather than waiting for the
-    // server's broadcast); for opponents, fall back to cardCount.
-    const cnt = (p.id === myId) ? myHand.length : (p.cardCount ?? 0);
-    countEl.textContent = String(cnt);
-
-    pill.appendChild(nameEl);
-    pill.appendChild(countEl);
-    orderEl.appendChild(pill);
-
-    if (i < players.length - 1) {
-      const arrow = document.createElement('span');
-      arrow.classList.add('turn-order-arrow');
-      arrow.textContent = gameDirection === 1 ? ' ▸ ' : ' ◂ ';
-      orderEl.appendChild(arrow);
-    }
-  }
-
-  if (lobbyDiv.style.display !== 'none') {
+  if (orderEl) {
+    orderEl.innerHTML = '';
     orderEl.style.display = 'none';
-  } else {
-    orderEl.style.display = '';
   }
+
+  updateGameStatusPills();
+  updateDevStateInfo();
+}
+
+// Source-of-truth for the current draw mode the lobby is using. Tracked
+// alongside players state so the in-game status pill can show "链式加牌"
+// or "直接加牌" without re-reading the lobby toggle UI.
+let currentDrawMode: 'chain' | 'direct' = 'chain';
+
+// In-game status strip: shows current draw mode (chain/direct) and the
+// pending chain count when there's an active +N stack. Hidden when the
+// game div isn't visible.
+function updateGameStatusPills(): void {
+  const wrap = document.getElementById('game-status');
+  const modeEl = document.getElementById('game-status-mode') as HTMLSpanElement | null;
+  const chainEl = document.getElementById('game-status-chain') as HTMLSpanElement | null;
+  if (!wrap || !modeEl || !chainEl) return;
+  // Only show the strip while the game UI is visible.
+  if (gameDiv.style.display === 'none') {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = '';
+
+  // Mode pill — always rendered while in-game.
+  modeEl.classList.remove('mode-chain', 'mode-direct');
+  if (currentDrawMode === 'chain') {
+    modeEl.classList.add('mode-chain');
+    modeEl.textContent = '链式加牌';
+  } else {
+    modeEl.classList.add('mode-direct');
+    modeEl.textContent = '直接加牌';
+  }
+
+  // Chain pill — only shown when chain mode is active AND there's a
+  // pending penalty count (gameState===1 = drawing-chain state in
+  // server.ts). In direct mode the +N is applied immediately so there's
+  // no chain to show.
+  if (currentDrawMode === 'chain' && gameState === 1 && drawingChain > 0) {
+    chainEl.classList.remove('hidden');
+    chainEl.textContent = `链式累计 +${drawingChain}`;
+  } else {
+    chainEl.classList.add('hidden');
+  }
+}
+
+// Dev panel state info pane — populated only when the dev panel is
+// active (i.e. the server told us we're in dev mode via the init
+// message's `dev:true` flag). For everyone else this is a no-op.
+function updateDevStateInfo(): void {
+  const pane = document.getElementById('dev-state-info');
+  if (!pane) return;
+  // Skip when dev panel is hidden (production builds, or before the
+  // init handshake fired). Cheap early-return so the per-update cost
+  // for normal users is one display lookup.
+  const panel = document.getElementById('dev-panel');
+  if (!panel || panel.style.display === 'none') {
+    pane.textContent = '';
+    return;
+  }
+  const me = players.find(p => p.id === myId);
+  const cur = players[currentTurn];
+  const rows: Array<[string, string]> = [
+    ['lobby', myLobbyId || '—'],
+    ['phase', gameDiv.style.display !== 'none' ? 'game' : 'lobby'],
+    ['players', String(players.length)],
+    ['turn', cur ? `${cur.name}${cur.isAI ? ' (AI)' : ''}` : '—'],
+    ['direction', gameDirection === 1 ? '→' : '←'],
+    ['drawMode', currentDrawMode],
+    ['gameState', String(gameState)],
+    ['chain', drawingChain > 0 ? `+${drawingChain}` : '—'],
+    ['turnDeadline', turnDeadline ? `${Math.max(0, Math.ceil((turnDeadline - Date.now()) / 1000))}s` : '—'],
+    ['timerPaused', turnTimerPaused ? 'true' : 'false'],
+    ['myId', myId ? myId.slice(0, 8) : '—'],
+    ['myHand', String(myHand.length)],
+    ['isCreator', me && me.isCreator ? 'true' : 'false'],
+    ['isSpectator', isSpectating ? 'true' : 'false'],
+  ];
+  pane.innerHTML = rows.map(([k, v]) =>
+    `<div class="dev-state-row"><span class="dev-state-key">${k}</span><span class="dev-state-val">${escapeHtml(v)}</span></div>`
+  ).join('');
+}
+
+// Minimal HTML escape for the dev info pane only — keeps colon-laden
+// player names and lobby ids from accidentally injecting markup.
+function escapeHtml(s: string): string {
+  return String(s).replace(/[&<>"']/g, c =>
+    c === '&' ? '&amp;' :
+    c === '<' ? '&lt;' :
+    c === '>' ? '&gt;' :
+    c === '"' ? '&quot;' :
+                '&#39;'
+  );
 }
 
 function showLobbyInfo(lobbyId: string): void {
@@ -1349,6 +1452,10 @@ function resetGameState(): void {
 function updatePlayers(newPlayers: Player[], turn: number): void {
   opponentHandsDiv.innerHTML = '';
   playersList.innerHTML = '';
+  // Track whether to render the merged turn-order layout. We only do
+  // this once the game is actually visible (gameDiv shown) so the in-
+  // lobby player list isn't affected.
+  const renderInOrder = newPlayers.length >= 2;
   for (let i = 0; i < newPlayers.length; i++) {
     const player = newPlayers[i];
     const playerDiv = document.createElement('div');
@@ -1374,6 +1481,10 @@ function updatePlayers(newPlayers: Player[], turn: number): void {
       playerDiv.classList.add('disconnected');
     }
 
+    if (player.id === myId) {
+      playerDiv.classList.add('self');
+    }
+
     let iconHtml = '';
     if (player.isCreator) {
       iconHtml += '<img src="/icons/crown.svg" style="width:1.2em;height:1.2em;vertical-align:text-bottom;margin-left:2px;">';
@@ -1388,15 +1499,31 @@ function updatePlayers(newPlayers: Player[], turn: number): void {
       displayText += ` · 重连中 ${remaining}s`;
     }
 
-    if (player.cardCount !== undefined && player.id !== myId) {
-      playerDiv.innerHTML = `${encodeUGC(displayText)}${iconHtml}（${player.cardCount} 张牌）`;
+    // For self, prefer the eagerly-known myHand.length so the count
+    // updates immediately on play (mirrors what the old turn-order
+    // pill did). For everyone else use the server-side cardCount.
+    const cardCount = (player.id === myId) ? myHand.length : (player.cardCount ?? undefined);
+    if (cardCount !== undefined) {
+      playerDiv.innerHTML = `${encodeUGC(displayText)}${iconHtml}（${cardCount} 张牌）`;
     } else {
       playerDiv.innerHTML = `${encodeUGC(displayText)}${iconHtml}`;
     }
 
     playerDiv.dataset.playerId = player.id;
-    if (player.id !== myId) {
+    // Render every player (including self) inside opponent-hands when we
+    // have a real game in progress. This is the merged turn-order display:
+    // self appears in the row in their actual seat, with prominent arrows
+    // between cards. The bottom hand area still owns the actual cards;
+    // this row is purely the order indicator + name + count.
+    if (renderInOrder || player.id !== myId) {
       opponentHandsDiv.appendChild(playerDiv);
+      // Insert a big direction arrow between cards (skip after the last).
+      if (i < newPlayers.length - 1) {
+        const arrow = document.createElement('span');
+        arrow.classList.add('order-arrow');
+        arrow.textContent = gameDirection === 1 ? '▶' : '◀';
+        opponentHandsDiv.appendChild(arrow);
+      }
     }
 
     const li = document.createElement('li');
@@ -2161,11 +2288,31 @@ document.addEventListener('DOMContentLoaded', () => {
   // Rules modal
   const rulesOverlay = document.getElementById('rules-overlay')!;
   const rulesBox = document.getElementById('rules-box')!;
+  // Holds the section id to highlight on the NEXT open of the rules
+  // dialog. Set by the draw-mode info icon's click handler. Cleared
+  // immediately after that one open so subsequent opens via "规则" /
+  // `?` show the dialog clean (the user's complaint: "clicking 规则
+  // shouldn't keep flashing the draw-mode section every time").
+  let pendingRulesHighlightId: string | null = null;
+  function applyPendingRulesHighlight(): void {
+    if (!pendingRulesHighlightId) return;
+    const id = pendingRulesHighlightId;
+    pendingRulesHighlightId = null;
+    setTimeout(() => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.classList.remove('highlight-section');
+      void el.offsetWidth; // force reflow to restart animation
+      el.classList.add('highlight-section');
+      scrollHighlightedSectionIntoView(el);
+    }, 300);
+  }
   document.getElementById('rules-link')!.addEventListener('click', (e) => {
     e.preventDefault();
     rulesOverlay.classList.remove('hidden');
     rulesOverlay.style.display = 'flex';
     rulesBox.style.animation = 'modalIn 0.2s ease';
+    applyPendingRulesHighlight();
   });
   function closeRules() {
     rulesBox.style.animation = 'modalOut 0.15s ease forwards';
@@ -2173,6 +2320,14 @@ document.addEventListener('DOMContentLoaded', () => {
       rulesBox.removeEventListener('animationend', h);
       rulesOverlay.classList.add('hidden');
       rulesOverlay.style.display = '';
+      // Strip any in-flight highlight class so the next rules open is
+      // clean. Without this, closing the dialog before the 4s
+      // highlight animation finishes leaves `.highlight-section` on
+      // the element, and the next open of the rules dialog would
+      // visually flash the section all over again.
+      document.querySelectorAll('.highlight-section').forEach(el => {
+        el.classList.remove('highlight-section');
+      });
     });
   }
   document.getElementById('rules-close-btn')!.addEventListener('click', closeRules);
@@ -2205,34 +2360,36 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Draw mode toggle
+  // Draw mode toggle. Non-creators see the area in read-only mode
+  // (`.readonly` class on #draw-mode-area is applied in updatePlayers
+  // when the local player isn't the creator). The CSS dims it but
+  // doesn't disable clicks; gate the click here so a stray click
+  // doesn't fire a server request that just bounces back as an error.
   document.querySelectorAll('#draw-mode-toggle-box .mode-option').forEach(el => {
     el.addEventListener('click', () => {
+      const drawModeArea = document.getElementById('draw-mode-area');
+      if (drawModeArea && drawModeArea.classList.contains('readonly')) return;
       const mode = el.getAttribute('data-mode')!;
       document.querySelectorAll('#draw-mode-toggle-box .mode-option').forEach(e => e.classList.remove('active'));
       el.classList.add('active');
+      // Update local state immediately so the in-game status pill
+      // reflects the change before the server's broadcast roundtrips.
+      currentDrawMode = mode === 'direct' ? 'direct' : 'chain';
+      updateGameStatusPills();
+      updateDevStateInfo();
       sendMessage({ action: 'set_draw_mode', mode });
     });
   });
 
-  // Draw mode info → opens rules and highlights the section
+  // Draw mode info → opens rules and highlights the section. Also
+  // remembers the user's intent so that future opens of the rules
+  // dialog (via the "规则" link or `?` shortcut) re-run the highlight.
   document.getElementById('draw-mode-info')!.addEventListener('click', () => {
+    pendingRulesHighlightId = 'rules-draw-mode-highlight';
     rulesOverlay.classList.remove('hidden');
     rulesOverlay.style.display = 'flex';
     rulesBox.style.animation = 'modalIn 0.2s ease';
-    setTimeout(() => {
-      const el = document.getElementById('rules-draw-mode-highlight');
-      if (el) {
-        el.classList.remove('highlight-section');
-        void el.offsetWidth; // force reflow to restart animation
-        el.classList.add('highlight-section');
-        // Center the highlighted section in the rules viewport. The rules
-        // dialog is a long scroll container; without this the highlight
-        // can fire while the user is scrolled to the top and the flash
-        // happens off-screen.
-        scrollHighlightedSectionIntoView(el);
-      }
-    }, 300);
+    applyPendingRulesHighlight();
   });
 
   // Task 6 — keyboard digit selection. 1-9 (and Numpad1-9) hover the
@@ -2809,37 +2966,55 @@ function showGameAborted(): void {
 // useful feedback. Caller must invoke BEFORE replacing `players` with
 // the new snapshot — we read the previous `players` array from outer
 // scope.
-function diffCardCountsForPenaltyPopup(prev: Player[], next: Player[]): void {
-  if (!prev || !next) return;
+// Compute the per-player card-count deltas between two snapshots and
+// return only the entries that should result in a +N popup. Pulled out
+// of the receive handler so the caller can spawn the popups AFTER
+// rebuilding #opponent-hands — without that ordering, updatePlayers'
+// `innerHTML = ''` would yank the just-spawned popups out of the DOM
+// before they could animate.
+//
+// We skip the popup for delta < 2 to avoid noise from the normal -1
+// each turn and the +1 the active player gets when manually drawing.
+function computePenaltyDeltas(prev: Player[], next: Player[]): Array<[string, number]> {
+  if (!prev || !next) return [];
   const prevById = new Map(prev.map(p => [p.id, p]));
+  const out: Array<[string, number]> = [];
   for (const np of next) {
     const op = prevById.get(np.id);
     if (!op) continue;
     const before = op.cardCount ?? 0;
     const after = np.cardCount ?? 0;
     const delta = after - before;
-    // Threshold of 2: avoids popping for the +1 a player gets when
-    // they manually click "draw" (boring). 2/4/N from chain penalties
-    // are the interesting case.
-    if (delta >= 2) {
-      spawnPenaltyPopup(np.id, delta);
-    }
+    if (delta >= 2) out.push([np.id, delta]);
+  }
+  return out;
+}
+
+// Legacy wrapper kept so existing callers (and tests that mock the
+// client) still work without changes — equivalent to "compute then
+// spawn". New code inside the update path uses computePenaltyDeltas
+// directly so the spawn can be ordered after updatePlayers.
+function diffCardCountsForPenaltyPopup(prev: Player[], next: Player[]): void {
+  for (const [pid, delta] of computePenaltyDeltas(prev, next)) {
+    spawnPenaltyPopup(pid, delta);
   }
 }
 
 function spawnPenaltyPopup(playerId: string, delta: number): void {
+  // After the merged turn-order layout, every player (including self)
+  // has a tile in #opponent-hands, so there's exactly one place to
+  // anchor the popup. We still fall back to the turn-indicator if
+  // the tile happens not to exist (e.g. spectator-only edge cases).
   const playerDiv = opponentHandsDiv.querySelector(`[data-player-id="${playerId}"]`) as HTMLDivElement | null;
-  if (!playerDiv && playerId !== myId) return;
   const popup = document.createElement('div');
   popup.classList.add('penalty-popup');
   popup.textContent = `+${delta}`;
-  // Pin to player tile if it's an opponent; for self, attach to the
-  // turn indicator so it floats near the player's own status.
   if (playerDiv) {
     playerDiv.appendChild(popup);
   } else {
     const target = document.getElementById('turn-indicator');
     if (target) target.appendChild(popup);
+    else return;
   }
   // 5s total animation = 0.4s rise + 4.2s linger + 0.4s fade.
   setTimeout(() => popup.remove(), 5200);
@@ -3002,16 +3177,24 @@ function setupDevPanel(): void {
   document.addEventListener('keydown', (e: KeyboardEvent) => {
     if (e.ctrlKey && e.shiftKey && e.code === 'KeyD') {
       e.preventDefault();
-      panel.classList.toggle('collapsed');
+      runDevPanelCollapseAnimation(panel);
     }
   });
 
-  // Toggle collapse on header click
+  // Toggle collapse on header click — but NOT when the click was
+  // part of a drag (mousedown→mousemove→mouseup with movement). The
+  // drag handler below sets a flag we check here.
   const header = document.getElementById('dev-panel-header');
   if (header) {
-    header.addEventListener('click', () => {
-      panel.classList.toggle('collapsed');
+    header.addEventListener('click', (e) => {
+      if (devPanelDragJustEnded) {
+        // Suppress this click — the user was dragging, not toggling.
+        devPanelDragJustEnded = false;
+        return;
+      }
+      runDevPanelCollapseAnimation(panel);
     });
+    installDevPanelDrag(panel, header);
   }
 
   // Dev button click handlers
@@ -3047,3 +3230,146 @@ function setupDevPanel(): void {
   const panel = document.getElementById('dev-panel');
   if (panel) panel.style.display = 'none';
 })();
+
+// Track whether the most recent header mouseup was the end of a drag
+// (vs. a regular click). Set by the drag-end handler below; consumed
+// by the header click listener so a drag doesn't accidentally toggle
+// the collapse state when the user releases the mouse.
+let devPanelDragJustEnded = false;
+
+// Toggle the panel's collapsed state with the .animating helper class
+// applied during the transition. While .animating is on, the body's
+// overflow is hidden via CSS so a scrollbar doesn't flash through the
+// expand/collapse animation. The class is removed on transitionend
+// (or after a safety timeout in case the event is missed).
+let devPanelAnimTimer: ReturnType<typeof setTimeout> | null = null;
+function runDevPanelCollapseAnimation(panel: HTMLElement): void {
+  const body = panel.querySelector('#dev-panel-body') as HTMLElement | null;
+  panel.classList.add('animating');
+  panel.classList.toggle('collapsed');
+  if (devPanelAnimTimer) clearTimeout(devPanelAnimTimer);
+  const cleanup = () => {
+    panel.classList.remove('animating');
+    if (devPanelAnimTimer) {
+      clearTimeout(devPanelAnimTimer);
+      devPanelAnimTimer = null;
+    }
+    if (body) body.removeEventListener('transitionend', onEnd);
+  };
+  function onEnd(e: TransitionEvent): void {
+    // Only react to the max-height transition — we don't want one of the
+    // shorter transitions (opacity/padding) to clear .animating early.
+    if (e.target !== body) return;
+    if (e.propertyName !== 'max-height') return;
+    cleanup();
+  }
+  if (body) body.addEventListener('transitionend', onEnd);
+  // Safety: if the transition somehow doesn't fire (display:none parent,
+  // user prefers-reduced-motion, etc.) clear the class anyway.
+  devPanelAnimTimer = setTimeout(cleanup, 600);
+}
+
+// Install drag-by-header on the dev panel. The panel is `position: fixed;
+// bottom/right` by default; once dragged we switch to `top/left` so the
+// pointer's offset stays consistent. Position survives reloads via
+// sessionStorage (per-tab — slot dance also lives in sessionStorage so
+// the dev panel position naturally sticks to a single tab).
+function installDevPanelDrag(panel: HTMLElement, header: HTMLElement): void {
+  // Restore previously-dragged position so a reload keeps the panel
+  // where the user put it.
+  try {
+    const saved = sessionStorage.getItem('unoDevPanelPos');
+    if (saved) {
+      const { left, top } = JSON.parse(saved);
+      if (typeof left === 'number' && typeof top === 'number') {
+        applyDevPanelPosition(panel, left, top);
+      }
+    }
+  } catch { /* corrupt JSON — ignore, fall back to default position */ }
+
+  let dragging = false;
+  let pointerId = -1;
+  let startX = 0;
+  let startY = 0;
+  let originLeft = 0;
+  let originTop = 0;
+  // Distance threshold — small movements should still register as a
+  // click. The header click listener uses devPanelDragJustEnded only
+  // when this threshold is exceeded.
+  const DRAG_THRESHOLD = 4;
+
+  header.style.cursor = 'grab';
+  header.style.touchAction = 'none';
+
+  header.addEventListener('pointerdown', (e: PointerEvent) => {
+    // Left mouse / primary touch only — right-click is for context menu.
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    dragging = true;
+    pointerId = e.pointerId;
+    startX = e.clientX;
+    startY = e.clientY;
+    const rect = panel.getBoundingClientRect();
+    originLeft = rect.left;
+    originTop = rect.top;
+    // Capture so we keep getting events even if the pointer leaves the
+    // header while the user is dragging.
+    try { header.setPointerCapture(pointerId); } catch { /* some browsers reject in synthetic events */ }
+    header.style.cursor = 'grabbing';
+  });
+
+  header.addEventListener('pointermove', (e: PointerEvent) => {
+    if (!dragging || e.pointerId !== pointerId) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+    devPanelDragJustEnded = true;
+    // Constrain to viewport so the user can't park the panel offscreen.
+    const margin = 4;
+    const w = panel.offsetWidth;
+    const h = panel.offsetHeight;
+    const maxLeft = Math.max(0, window.innerWidth - w - margin);
+    const maxTop = Math.max(0, window.innerHeight - h - margin);
+    const newLeft = Math.max(margin, Math.min(originLeft + dx, maxLeft));
+    const newTop = Math.max(margin, Math.min(originTop + dy, maxTop));
+    applyDevPanelPosition(panel, newLeft, newTop);
+  });
+
+  function endDrag(e: PointerEvent): void {
+    if (!dragging || e.pointerId !== pointerId) return;
+    dragging = false;
+    pointerId = -1;
+    header.style.cursor = 'grab';
+    try { header.releasePointerCapture(e.pointerId); } catch { /* idempotent */ }
+    // Persist final position. We only write on drag-end, not on every
+    // pointermove, to keep storage churn low.
+    if (devPanelDragJustEnded) {
+      const rect = panel.getBoundingClientRect();
+      try {
+        sessionStorage.setItem('unoDevPanelPos', JSON.stringify({ left: rect.left, top: rect.top }));
+      } catch { /* storage full / private mode — silently ignore */ }
+    }
+  }
+  header.addEventListener('pointerup', endDrag);
+  header.addEventListener('pointercancel', endDrag);
+
+  // Keep the panel inside the viewport on resize. Without this, a
+  // panel parked near the right edge of a wide window would end up
+  // off-screen on a narrow window and be unreachable.
+  window.addEventListener('resize', () => {
+    if (!panel.style.left && !panel.style.top) return; // never been dragged
+    const rect = panel.getBoundingClientRect();
+    const margin = 4;
+    const maxLeft = Math.max(0, window.innerWidth - rect.width - margin);
+    const maxTop = Math.max(0, window.innerHeight - rect.height - margin);
+    const left = Math.max(margin, Math.min(rect.left, maxLeft));
+    const top = Math.max(margin, Math.min(rect.top, maxTop));
+    applyDevPanelPosition(panel, left, top);
+  });
+}
+
+function applyDevPanelPosition(panel: HTMLElement, left: number, top: number): void {
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
+  panel.style.right = 'auto';
+  panel.style.bottom = 'auto';
+}
