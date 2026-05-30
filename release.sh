@@ -18,7 +18,7 @@ tag_name="v${version}"
 if [ -n "$(git ls-remote --tags origin "refs/tags/${tag_name}")" ]; then
     echo "warning: tag ${tag_name} already exists on remote repository!"
     read -p "do you want to bump the patch version and continue? (y/n): " choice
-    
+
     if [[ "$choice" =~ ^[Yy]$ ]]; then
         echo "bumping patch version..."
         # manually bump 4-part version (a.b.c.d → a.b.c.d+1)
@@ -34,7 +34,7 @@ if [ -n "$(git ls-remote --tags origin "refs/tags/${tag_name}")" ]; then
         "
 
         tag_name="v${version}"
-        
+
         # commit version changes and push to remote (with tags)
         git add package.json
         git commit -m "chore: bump version to ${version}"
@@ -61,7 +61,7 @@ git push origin "${tag_name}" 2>/dev/null || true  # ensure tag is pushed even i
 
 # 5. invoke the build script to generate artifacts
 echo "starting build process..."
-./build-all.sh
+node ./scripts/build-all.js
 
 # 6. create github release and upload all matching files
 echo "creating github release and uploading artifacts..."
