@@ -39,6 +39,21 @@ export async function build(runtime, platform, arch) {
   if (platform == "win") {
     await syncExeVersion(outfile);
   }
+  return outfile;
+}
+
+export async function buildAndPack(runtime, platform, arch) {
+  const outfile = await build(runtime, platform, arch);
+  const {
+    default: { version },
+  } = await import("../package.json", {
+    with: { type: "json" },
+  });
+
+  const target = `release/UNO-v${version}_${platform}_${arch}.zip`;
+  // ${VERSION}_${PLATFORM}_${ARCH}
+  await $`mkdir -p release`;
+  await $`zip ${target} -j ${outfile}`;
 }
 
 if (import.meta.main) {
