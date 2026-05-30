@@ -11,17 +11,8 @@
     -webkit-user-select: none !important;
 }
 
-html {
-    background: linear-gradient(135deg, #121212 0%, #2d2d2d 100%);
-    min-height: 100%;
-    /* Disable scroll anchoring on the scroll container. The collapsing
-       sticky header and the wild-picker open/close both change in-flow
-       height; with anchoring on, the browser nudges scrollY to keep the
-       "anchor" element in place, which — when the user is scrolled near
-       the bottom — jumps the page (sometimes all the way to top). Off,
-       scrollY stays where the user left it. Explicit scrollTo() still
-       works. Set on both html and body to cover the active scroller. */
-    overflow-anchor: none;
+:root {
+   background-color: #202020 !important; 
 }
 
 body {
@@ -415,11 +406,16 @@ h1 {
     z-index: 50;
     padding: 15px 30px;
     border-radius: 15px;
-    margin-bottom: 25px;
     text-align: center;
     min-width: 350px;
     box-shadow: 0 8px 20px rgba(255, 107, 107, 0.3);
     transition: all 0.3s ease;
+    /* No margin-bottom: the player-tiles row pins flush against this
+       indicator's bottom (see #opponent-hands top: var(--tiles-sticky-top)).
+       Any margin here would, while the indicator is pinned but the tiles
+       are still scrolling up to their pin, expose a transparent seam where
+       page content shows between the two sticky elements. */
+    margin-bottom: 0;
 }
 
 #turn-indicator.my-turn {
@@ -524,6 +520,7 @@ h1 {
         opacity: 0;
         transform: scale(0.92) translateY(-8px);
     }
+
     to {
         opacity: 1;
         transform: scale(1) translateY(0);
@@ -535,6 +532,7 @@ h1 {
         opacity: 1;
         transform: scale(1) translateY(0);
     }
+
     to {
         opacity: 0;
         transform: scale(0.96) translateY(-4px);
@@ -591,7 +589,8 @@ h1 {
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.35);
 }
 
-.color-option:hover, .color-option.keyboard-hover {
+.color-option:hover,
+.color-option.keyboard-hover {
     transform: scale(1.15);
     border-color: #667eea;
     box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
@@ -706,8 +705,17 @@ h1 {
 }
 
 @keyframes orderArrowPulse {
-    0%, 100% { transform: scale(1); opacity: 0.85; }
-    50% { transform: scale(1.18); opacity: 1; }
+
+    0%,
+    100% {
+        transform: scale(1);
+        opacity: 0.85;
+    }
+
+    50% {
+        transform: scale(1.18);
+        opacity: 1;
+    }
 }
 
 /* Self card in the merged turn-order row. Yellow ring so the user
@@ -717,7 +725,7 @@ h1 {
 #opponent-hands .player.self {
     border-color: #ffd166 !important;
     box-shadow: 0 0 0 2px rgba(255, 209, 102, 0.4),
-                0 4px 8px rgba(0, 0, 0, 0.2);
+        0 4px 8px rgba(0, 0, 0, 0.2);
     color: #ffd166;
 }
 
@@ -728,7 +736,7 @@ h1 {
     color: #ffd166;
     border-color: #ffd166 !important;
     box-shadow: 0 0 0 2px rgba(255, 209, 102, 0.7),
-                0 8px 16px rgba(102, 126, 234, 0.3);
+        0 8px 16px rgba(102, 126, 234, 0.3);
 }
 
 /* Legacy turn-order-pill rules (kept for any tooling/snapshot reads
@@ -766,14 +774,16 @@ h1 {
     color: #ffd166;
     font-weight: 600;
 }
+
 .turn-order-pill.self.current {
     box-shadow: 0 0 8px rgba(102, 126, 234, 0.4),
-                0 0 0 2px rgba(255, 209, 102, 0.6);
+        0 0 0 2px rgba(255, 209, 102, 0.6);
 }
 
 .turn-order-name {
     margin-right: 6px;
 }
+
 .turn-order-count {
     display: inline-block;
     min-width: 18px;
@@ -893,12 +903,17 @@ body.spectator #turn-indicator::after {
    vertical scrollbar gutter so the full-bleed doesn't spawn a phantom
    horizontal scrollbar. */
 
-/* Hide the big turn-indicator pill entirely while collapsed. Use
-   visibility (not display) so its in-flow height is preserved and the
-   document height — and thus the scroll position — never changes when
-   toggling. */
+/* Hide the big turn-indicator pill while collapsed. Fade + slight lift
+   instead of an instant disappear. visibility is delayed to the end of
+   the fade (via transition) so its in-flow height is preserved during
+   the animation and the document height — and scroll position — never
+   jumps. */
 body.header-collapsed #turn-indicator {
+    opacity: 0;
+    transform: translateY(-6px);
     visibility: hidden;
+    transition: opacity 0.22s ease, transform 0.22s ease,
+        visibility 0s linear 0.22s;
 }
 
 /* The tiles row is the single docked card. Full-bleed to the viewport
@@ -909,27 +924,25 @@ body.header-collapsed #opponent-hands {
     margin-left: calc(50% - var(--vw100, 100vw) / 2);
     margin-right: calc(50% - var(--vw100, 100vw) / 2);
     max-width: none;
-    top: 8px;
+    top: 0;
     z-index: 51;
     border-radius: 16px;
     background: rgba(20, 20, 20, 0.95);
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
     /* Reserve space for the 12px color strip so player tiles don't sit
-       under it. */
+       under it. Keep total vertical padding equal to the expanded state
+       (base is 10px top + 10px bottom = 20px) by zeroing the bottom, so
+       the card's in-flow height — and thus document height / scroll
+       position — doesn't change when toggling. */
     padding-top: 20px;
+    padding-bottom: 0;
 }
 
-/* The color strip: a 12px bar hugging the top of the tiles card. Inherits
-   whose-turn color from the body flags set alongside header-collapsed. */
+/* Grow the color strip into view. Base rule (height:0, opacity:0) handles
+   the reverse; the shared transition there animates both directions. */
 body.header-collapsed #opponent-hands::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
     height: 12px;
-    border-radius: 16px 16px 0 0;
-    background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+    opacity: 1;
 }
 
 /* Green strip when it's our turn. */
@@ -944,7 +957,8 @@ body.header-collapsed.spectator #opponent-hands::before {
 
 /* Countdown badge: dock it into the top-left of the tiles card, just
    below the color strip. Fixed positioning tracks the viewport corner;
-   the card pins at top:8 and the strip is 12px tall, so 24px clears it. */
+   the card pins at top:8 and the strip is 12px tall, so 24px clears it.
+   Fades/slides in a touch after the card has docked. */
 body.header-collapsed #turn-timer {
     position: fixed;
     top: 32px;
@@ -953,6 +967,34 @@ body.header-collapsed #turn-timer {
     z-index: 60;
     line-height: 1.4;
     font-size: 0.8rem;
+    animation: timerDockIn 0.28s ease both;
+}
+
+@keyframes timerDockIn {
+    from {
+        opacity: 0;
+        transform: translateY(-4px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Respect reduced-motion: skip the header collapse/expand animation and
+   snap between states instead. */
+@media (prefers-reduced-motion: reduce) {
+
+    #opponent-hands,
+    #opponent-hands::before,
+    body.header-collapsed #turn-indicator {
+        transition: none;
+    }
+
+    body.header-collapsed #turn-timer {
+        animation: none;
+    }
 }
 
 .card {
@@ -997,7 +1039,8 @@ body.header-collapsed #turn-timer {
     opacity: 1;
 }
 
-.card:hover, .card.keyboard-hover {
+.card:hover,
+.card.keyboard-hover {
     transform: translateY(-8px) scale(1.05);
     box-shadow:
         0 8px 16px rgba(0, 0, 0, 0.15),
@@ -1033,7 +1076,8 @@ body.header-collapsed #turn-timer {
     opacity: 0.7;
 }
 
-.card.not-playable:hover, .card.not-playable.keyboard-hover {
+.card.not-playable:hover,
+.card.not-playable.keyboard-hover {
     transform: none;
     box-shadow:
         0 4px 8px rgba(0, 0, 0, 0.1),
@@ -1290,12 +1334,48 @@ body.header-collapsed #turn-timer {
     flex-wrap: wrap;
     align-items: center;
     position: sticky;
-    top: 80px;
+    /* Pin flush against the turn-indicator's pinned bottom. The indicator
+       sticks at top:8 and its height varies (content / font / mobile), so
+       the exact value is measured in JS and published as --tiles-sticky-top
+       (see updateTilesStickyTop). The 80px fallback matches the historical
+       default for tabs before the measurement runs. Pinning flush closes
+       the gap that used to show page content scrolling between the two
+       separately-pinned sticky elements. */
+    top: var(--tiles-sticky-top, 80px);
     z-index: 49;
     background: rgba(30, 30, 30, 0.85);
     backdrop-filter: blur(6px);
     border-radius: 16px;
     padding: 10px 14px;
+    /* Smoothly animate the expand⇄collapse docking. Only the properties
+       that actually differ between the two states are listed (no `all`,
+       which would also fire on unrelated style touches). `top` drives the
+       slide between the 80px and 8px sticky anchors; padding-top opens the
+       gap for the color strip; the rest settle the card look. */
+    transition: top 0.28s cubic-bezier(0.22, 0.61, 0.36, 1),
+        padding-top 0.28s ease,
+        padding-bottom 0.28s ease,
+        background 0.28s ease,
+        box-shadow 0.28s ease,
+        border-radius 0.28s ease;
+}
+
+/* The whose-turn color strip. Declared in BOTH states (height 0 +
+   transparent when expanded) so it can grow/shrink smoothly instead of
+   popping in. The collapsed rule below sets height:12px + opacity:1. */
+#opponent-hands::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 0;
+    opacity: 0;
+    border-radius: 16px 16px 0 0;
+    background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+    pointer-events: none;
+    transition: height 0.28s cubic-bezier(0.22, 0.61, 0.36, 1),
+        opacity 0.28s ease;
 }
 
 body.player-action-disabled #center-area {
@@ -1397,7 +1477,7 @@ body.player-action-disabled #player-hand .card.not-playable {
        merged turn-order row look visually crooked. Use a glow + ring
        instead to draw the eye without breaking the baseline. */
     box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.55),
-                0 8px 16px rgba(102, 126, 234, 0.35);
+        0 8px 16px rgba(102, 126, 234, 0.35);
 }
 
 #opponent-hands .player.uno {
@@ -1607,7 +1687,7 @@ body.player-action-disabled #player-hand .card.not-playable {
     color: white;
     /* No translateY — keeps the merged turn-order row baseline-aligned. */
     box-shadow: 0 0 0 2px rgba(243, 156, 18, 0.55),
-                0 8px 16px rgba(243, 156, 18, 0.35);
+        0 8px 16px rgba(243, 156, 18, 0.35);
 }
 
 #opponent-hands .player.disconnected,
@@ -2124,8 +2204,8 @@ body.player-action-disabled #player-hand .card.not-playable {
     max-height: 80vh;
     opacity: 1;
     transition: max-height 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-                padding 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-                opacity 0.4s ease;
+        padding 0.45s cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 0.4s ease;
     /* Slim scrollbar so the panel doesn't look chunky on macOS-style
        scrollbar themes. */
     scrollbar-width: thin;
@@ -2141,13 +2221,16 @@ body.player-action-disabled #player-hand .card.not-playable {
     overflow: hidden;
     scrollbar-width: none;
 }
+
 #dev-panel.animating #dev-panel-body::-webkit-scrollbar {
     display: none;
 }
+
 #dev-panel.animating #dev-state-info {
     overflow: hidden;
     scrollbar-width: none;
 }
+
 #dev-panel.animating #dev-state-info::-webkit-scrollbar {
     display: none;
 }
@@ -2155,10 +2238,12 @@ body.player-action-disabled #player-hand .card.not-playable {
 #dev-panel-body::-webkit-scrollbar {
     width: 6px;
 }
+
 #dev-panel-body::-webkit-scrollbar-track {
     background: #2d2d2d;
     border-radius: 3px;
 }
+
 #dev-panel-body::-webkit-scrollbar-thumb {
     background: #667eea;
     border-radius: 3px;
@@ -2353,9 +2438,12 @@ footer a:hover {
 }
 
 @keyframes chainPulse {
-    0%, 100% {
+
+    0%,
+    100% {
         box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
     }
+
     50% {
         box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
     }
@@ -2368,7 +2456,8 @@ footer a:hover {
    exceed that cap, the pane scrolls inside its own box. */
 #dev-state-info {
     position: sticky;
-    top: -8px; /* counteract the panel-body's 8px top padding */
+    top: -8px;
+    /* counteract the panel-body's 8px top padding */
     margin: -8px -8px 4px -8px;
     padding: 8px 10px;
     z-index: 1;
@@ -2394,9 +2483,11 @@ footer a:hover {
 #dev-state-info::-webkit-scrollbar {
     width: 6px;
 }
+
 #dev-state-info::-webkit-scrollbar-track {
     background: #111827;
 }
+
 #dev-state-info::-webkit-scrollbar-thumb {
     background: #667eea;
     border-radius: 3px;
@@ -2433,10 +2524,13 @@ footer a:hover {
 }
 
 @keyframes turnTimerCritical {
-    0%, 100% {
+
+    0%,
+    100% {
         transform: scale(1);
         box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.35);
     }
+
     50% {
         transform: scale(1.08);
         box-shadow: 0 0 0 6px rgba(220, 38, 38, 0.0);
@@ -2554,17 +2648,21 @@ footer a:hover {
         opacity: 0;
         transform: translateY(0) scale(0.8);
     }
+
     8% {
         opacity: 1;
         transform: translateY(-6px) scale(1.1);
     }
+
     16% {
         transform: translateY(-10px) scale(1);
     }
+
     85% {
         opacity: 1;
         transform: translateY(-30px);
     }
+
     100% {
         opacity: 0;
         transform: translateY(-40px);
@@ -2590,25 +2688,33 @@ footer a:hover {
     scrollbar-width: thin;
     scrollbar-color: #4a5568 #1a1a1a;
 }
+
 #reaction-history:empty {
     /* Hide the empty box so it doesn't take up space until someone
        sends a reaction. */
     display: none;
 }
-#reaction-history::-webkit-scrollbar { width: 6px; }
+
+#reaction-history::-webkit-scrollbar {
+    width: 6px;
+}
+
 #reaction-history::-webkit-scrollbar-thumb {
     background: #4a5568;
     border-radius: 3px;
 }
+
 .reaction-history-row {
     display: flex;
     gap: 6px;
     align-items: center;
     padding: 2px 0;
 }
+
 .reaction-history-row.self .reaction-history-name {
     color: #ffd166;
 }
+
 .reaction-history-name {
     color: #a0aec0;
     font-weight: 600;
@@ -2619,10 +2725,12 @@ footer a:hover {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
 .reaction-history-content {
     color: #e0e0e0;
     word-break: break-word;
 }
+
 .reaction-history-content img {
     vertical-align: middle;
 }

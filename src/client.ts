@@ -1311,6 +1311,9 @@ function updateTurnIndicator(): void {
 
   updateGameStatusPills();
   updateDevStateInfo();
+  // The indicator's height can change with its content (label/timer),
+  // so re-measure where the tiles row should pin flush beneath it.
+  updateTilesStickyTop();
 }
 
 // Source-of-truth for the current draw mode the lobby is using. Tracked
@@ -1374,6 +1377,23 @@ const TURN_INDICATOR_STICKY_TOP = 8; // keep in sync with #turn-indicator { top 
 function setViewportWidthVar(): void {
   const w = document.documentElement.clientWidth;
   document.documentElement.style.setProperty('--vw100', `${w}px`);
+}
+
+// The turn-indicator and the player-tiles row are both sticky but pin at
+// different top offsets (indicator at top:8, tiles below it). If the
+// tiles' sticky `top` is larger than the indicator's pinned bottom, the
+// page content scrolls through the gap between the two — a visible seam
+// when scrolled partway. Measure the indicator's actual pinned footprint
+// (height + its 8px top offset) and publish it so the tiles pin flush.
+const TILES_FALLBACK_TOP = 80;
+function updateTilesStickyTop(): void {
+  if (gameDiv.style.display === 'none') return;
+  // offsetHeight is the laid-out height regardless of the indicator's
+  // current scroll position (sticky doesn't change it). Add the 8px
+  // sticky-top anchor; no extra gap so the tiles butt right against it.
+  const h = turnIndicator.offsetHeight;
+  const top = h > 0 ? TURN_INDICATOR_STICKY_TOP + h : TILES_FALLBACK_TOP;
+  document.documentElement.style.setProperty('--tiles-sticky-top', `${top}px`);
 }
 
 // We decide collapse/expand from a zero-height SENTINEL placed in normal
@@ -1466,6 +1486,7 @@ function scheduleStickyHeaderCollapse(): void {
 
 function ensureStickyHeaderWatcher(): void {
   setViewportWidthVar();
+  updateTilesStickyTop();
   ensureStickyHeaderSentinel();
   // Evaluate once now in case we're already scrolled.
   scheduleStickyHeaderCollapse();
@@ -1475,6 +1496,7 @@ function ensureStickyHeaderWatcher(): void {
   window.addEventListener('scroll', scheduleStickyHeaderCollapse, { passive: true });
   window.addEventListener('resize', () => {
     setViewportWidthVar();
+    updateTilesStickyTop();
     scheduleStickyHeaderCollapse();
   }, { passive: true });
 }
