@@ -61,6 +61,7 @@ git push origin "${tag_name}" 2>/dev/null || true  # ensure tag is pushed even i
 
 # 5. invoke the build script to generate artifacts
 echo "starting build process..."
+pnpm build
 node ./scripts/build-all.js
 
 # 6. create github release and upload all matching files
