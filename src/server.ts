@@ -1,18 +1,26 @@
-import { WebSocketServer, WebSocket } from 'ws';
-import { Server, IncomingMessage, ServerResponse } from 'http';
-import { readFileSync, existsSync } from 'fs';
-import { randomBytes } from 'crypto';
-import path from 'path';
-import { decideMove } from './aiplayer';
-import { ERR, errorResponse, ErrorCode } from './errors';
+import { WebSocketServer, WebSocket } from "ws";
+import { Server, IncomingMessage, ServerResponse } from "http";
+import { readFileSync, existsSync } from "fs";
+import { randomBytes } from "crypto";
+import path from "path";
+import { decideMove } from "./aiplayer";
+import { ERR, errorResponse, ErrorCode } from "./errors";
 import {
-  RECONNECT_DEFER_MS, RECONNECT_DEADLINE_MS, DISCONNECT_REMOVE_MS,
-  MAX_HAND_CARDS, NAME_LENGTH_MIN, NAME_LENGTH_MAX,
-  LOBBY_ID_LENGTH_MIN, LOBBY_ID_LENGTH_MAX,
-  MAX_AI_PER_LOBBY, REACTION_CONTENT_MAX,
-  WS_MAX_PAYLOAD, MAX_PARSE_ERRORS_PER_CONN,
-  PLAY_TIMEOUT_MS, PLAY_TIMEOUT_GRACE_MS,
-} from './constants';
+  RECONNECT_DEFER_MS,
+  RECONNECT_DEADLINE_MS,
+  DISCONNECT_REMOVE_MS,
+  MAX_HAND_CARDS,
+  NAME_LENGTH_MIN,
+  NAME_LENGTH_MAX,
+  LOBBY_ID_LENGTH_MIN,
+  LOBBY_ID_LENGTH_MAX,
+  MAX_AI_PER_LOBBY,
+  REACTION_CONTENT_MAX,
+  WS_MAX_PAYLOAD,
+  MAX_PARSE_ERRORS_PER_CONN,
+  PLAY_TIMEOUT_MS,
+  PLAY_TIMEOUT_GRACE_MS,
+} from "./constants";
 
 interface Card {
   color?: string;
@@ -33,7 +41,7 @@ interface Player {
 
 enum LobbyGameState {
   normal,
-  drawing  // 连续出加牌中...
+  drawing, // 连续出加牌中...
 }
 
 interface Lobby {
@@ -45,9 +53,9 @@ interface Lobby {
     turn: number;
     direction: number;
     started: boolean;
-    state: LobbyGameState,
-    drawingCount: number,
-    drawMode: 'chain' | 'direct'
+    state: LobbyGameState;
+    drawingCount: number;
+    drawMode: "chain" | "direct";
   };
 }
 
@@ -89,21 +97,27 @@ interface ClientMessage {
 
 type StaticFile = [string, string];
 
-const allowFiles: StaticFile[] = [['index.html', 'text/html'], ['client.js', 'text/javascript'], ['style.css', 'text/css']];
+const allowFiles: StaticFile[] = [
+  ["index.html", "text/html"],
+  ["client.cjs", "text/javascript"],
+  ["style.css", "text/css"],
+];
 // Use a null-prototype object so the `in` operator never matches Object.prototype
 // keys like __proto__, constructor, toString. Without this, GET /__proto__ falls
 // into the static-file branch with a destructured `type` of `undefined`, which
 // then crashes the server via res.setHeader('Content-Type', undefined).
-const files: Record<string, { content: Buffer; type: string }> = Object.create(null);
+const files: Record<string, { content: Buffer; type: string }> =
+  Object.create(null);
 
-const PROJECT_ROOT = path.resolve(__dirname, '..');
+const PROJECT_ROOT = path.resolve(import.meta.dirname, "..");
 
 function safeResolve(...segments: string[]): string | null {
   const resolved = path.resolve(...segments);
   const cwd = path.resolve(process.cwd());
-  const root = path.resolve(__dirname, '..');
+  const root = PROJECT_ROOT;
   if (resolved.startsWith(cwd + path.sep) || resolved === cwd) return resolved;
-  if (resolved.startsWith(root + path.sep) || resolved === root) return resolved;
+  if (resolved.startsWith(root + path.sep) || resolved === root)
+    return resolved;
   return null;
 }
 
@@ -113,10 +127,12 @@ function safeResolve(...segments: string[]): string | null {
 // UI breakage.
 const LOBBY_ID_REGEX = /^[\u0020-\u007E\u4e00-\u9fff]+$/; // printable ASCII or CJK
 function isValidLobbyId(v: unknown): v is string {
-  return typeof v === 'string'
-    && v.length >= LOBBY_ID_LENGTH_MIN
-    && v.length <= LOBBY_ID_LENGTH_MAX
-    && LOBBY_ID_REGEX.test(v);
+  return (
+    typeof v === "string" &&
+    v.length >= LOBBY_ID_LENGTH_MIN &&
+    v.length <= LOBBY_ID_LENGTH_MAX &&
+    LOBBY_ID_REGEX.test(v)
+  );
 }
 
 // Canonical form of a lobby id: trimmed of surrounding whitespace and
@@ -130,9 +146,11 @@ function normalizeLobbyId(v: string): string {
 }
 
 function isValidPlayerName(v: unknown): v is string {
-  return typeof v === 'string'
-    && v.length >= NAME_LENGTH_MIN
-    && v.length <= NAME_LENGTH_MAX;
+  return (
+    typeof v === "string" &&
+    v.length >= NAME_LENGTH_MIN &&
+    v.length <= NAME_LENGTH_MAX
+  );
 }
 
 // Origin allowlist for WebSocket upgrades. Defaults to "same host" — i.e. the
@@ -141,9 +159,14 @@ function isValidPlayerName(v: unknown): v is string {
 // (comma separated). Empty / non-browser clients (no Origin header) are still
 // allowed because they are not subject to the cross-site abuse this guards
 // against.
-const EXTRA_ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
-  .split(',').map(s => s.trim()).filter(Boolean);
-function isAllowedOrigin(origin: string | undefined, hostHeader: string | undefined): boolean {
+const EXTRA_ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+function isAllowedOrigin(
+  origin: string | undefined,
+  hostHeader: string | undefined,
+): boolean {
   if (!origin) return true; // non-browser client
   if (EXTRA_ALLOWED_ORIGINS.includes(origin)) return true;
   if (!hostHeader) return false;
@@ -155,37 +178,44 @@ function isAllowedOrigin(origin: string | undefined, hostHeader: string | undefi
   }
 }
 
-const PKG = JSON.parse(readFileSync(safeResolve(PROJECT_ROOT, 'package.json')!, 'utf-8'));
-const VERSION = PKG.version || '1.0.0';
+const PKG = JSON.parse(
+  readFileSync(safeResolve(PROJECT_ROOT, "package.json")!, "utf-8"),
+);
+const VERSION = PKG.version || "1.0.0";
 
 function loadStaticFiles(): void {
   for (const [file, type] of allowFiles) {
-    let fullPath = safeResolve(__dirname, file);
+    let fullPath = safeResolve(import.meta.dirname, file);
     if (!fullPath || !existsSync(fullPath)) {
-      if (file === 'client.js') {
-        fullPath = safeResolve(PROJECT_ROOT, 'dist', file);
+      if (file === "client.cjs") {
+        fullPath = safeResolve(PROJECT_ROOT, "dist", file);
       } else {
-        fullPath = safeResolve(PROJECT_ROOT, 'public', file);
+        fullPath = safeResolve(PROJECT_ROOT, "public", file);
       }
     }
     if (!fullPath) continue;
     files[file] = { content: readFileSync(fullPath), type };
   }
   // Preload icon SVGs from manifest
-  let manifestPath = safeResolve(__dirname, 'icons', 'manifest.json');
+  let manifestPath = safeResolve(import.meta.dirname, "icons", "manifest.json");
   if (!manifestPath || !existsSync(manifestPath)) {
-    manifestPath = safeResolve(PROJECT_ROOT, 'public', 'icons', 'manifest.json');
+    manifestPath = safeResolve(
+      PROJECT_ROOT,
+      "public",
+      "icons",
+      "manifest.json",
+    );
   }
   if (manifestPath) {
-    const iconFiles: string[] = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+    const iconFiles: string[] = JSON.parse(readFileSync(manifestPath, "utf-8"));
     for (const f of iconFiles) {
       const key = `icons/${f.toLowerCase()}`;
-      let iconPath = safeResolve(__dirname, 'icons', f);
+      let iconPath = safeResolve(import.meta.dirname, "icons", f);
       if (!iconPath || !existsSync(iconPath)) {
-        iconPath = safeResolve(PROJECT_ROOT, 'public', 'icons', f);
+        iconPath = safeResolve(PROJECT_ROOT, "public", "icons", f);
       }
       if (!iconPath) continue;
-      files[key] = { content: readFileSync(iconPath), type: 'image/svg+xml' };
+      files[key] = { content: readFileSync(iconPath), type: "image/svg+xml" };
     }
   }
 }
@@ -194,88 +224,103 @@ function loadStaticFiles(): void {
 loadStaticFiles();
 
 const httpServer = new Server((req: IncomingMessage, res: ServerResponse) => {
-  const url = (req.url || '').toLowerCase();
+  const url = (req.url || "").toLowerCase();
   const filename = url.slice(1);
 
   // Defense-in-depth security headers. Even though our client renders all
   // user content via textContent / encodeUGC, CSP and the others limit the
   // blast radius of any future regression.
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader(
-    'Content-Security-Policy',
-    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-    + "connect-src 'self' ws: wss:; base-uri 'none'; frame-ancestors 'none'"
+    "Content-Security-Policy",
+    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+      "connect-src 'self' ws: wss:; base-uri 'none'; frame-ancestors 'none'",
   );
 
-  if (url === '/') {
+  if (url === "/") {
     const { content, type } = files[allowFiles[0][0]];
-    res.setHeader('Content-Type', type);
+    res.setHeader("Content-Type", type);
     return res.end(content);
   }
 
-  if (url === '/errors') {
-    res.setHeader('Content-Type', 'application/json');
+  if (url === "/errors") {
+    res.setHeader("Content-Type", "application/json");
     return res.end(JSON.stringify(ERR));
   }
 
-  if (url === '/constants') {
-    res.setHeader('Content-Type', 'application/json');
-    return res.end(JSON.stringify({
-      NAME_LENGTH_MIN, NAME_LENGTH_MAX, MAX_HAND_CARDS,
-      RECONNECT_DEFER_MS, RECONNECT_DEADLINE_MS, DISCONNECT_REMOVE_MS,
-      PLAY_TIMEOUT_MS,
-    }));
+  if (url === "/constants") {
+    res.setHeader("Content-Type", "application/json");
+    return res.end(
+      JSON.stringify({
+        NAME_LENGTH_MIN,
+        NAME_LENGTH_MAX,
+        MAX_HAND_CARDS,
+        RECONNECT_DEFER_MS,
+        RECONNECT_DEADLINE_MS,
+        DISCONNECT_REMOVE_MS,
+        PLAY_TIMEOUT_MS,
+      }),
+    );
   }
 
   // Serve icon SVGs from cache
-  if (url.startsWith('/icons/') && filename in files) {
+  if (url.startsWith("/icons/") && filename in files) {
     const { content, type } = files[filename];
-    res.setHeader('Content-Type', type);
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader("Content-Type", type);
+    res.setHeader("Cache-Control", "public, max-age=86400");
     return res.end(content);
   }
 
   if (!!filename && filename in files) {
     const { content, type } = files[filename];
-    res.setHeader('Content-Type', type);
+    res.setHeader("Content-Type", type);
     return res.end(content);
   }
 
-  res.statusCode = 404
-  return res.end()
+  res.statusCode = 404;
+  return res.end();
 });
 
-httpServer.on('upgrade', (request: IncomingMessage, socket: import('net').Socket, head: Buffer) => {
-  const { pathname } = new URL(request.url!, `http://${request.headers.host}`);
+httpServer.on(
+  "upgrade",
+  (request: IncomingMessage, socket: import("net").Socket, head: Buffer) => {
+    const { pathname } = new URL(
+      request.url!,
+      `http://${request.headers.host}`,
+    );
 
-  if (pathname !== '/ws') {
-    socket.destroy();
-    return;
-  }
+    if (pathname !== "/ws") {
+      socket.destroy();
+      return;
+    }
 
-  // Origin check — reject cross-site WebSocket hijacking attempts. The
-  // browser enforces same-origin for fetch/XHR but NOT for WebSockets, so
-  // the server has to do it. Non-browser clients omit Origin and are allowed
-  // through (they're not subject to CSWSH).
-  const origin = request.headers.origin as string | undefined;
-  if (!isAllowedOrigin(origin, request.headers.host)) {
-    serverWarn('rejected ws upgrade from cross-origin', { origin, host: request.headers.host });
-    socket.destroy();
-    return;
-  }
+    // Origin check — reject cross-site WebSocket hijacking attempts. The
+    // browser enforces same-origin for fetch/XHR but NOT for WebSockets, so
+    // the server has to do it. Non-browser clients omit Origin and are allowed
+    // through (they're not subject to CSWSH).
+    const origin = request.headers.origin as string | undefined;
+    if (!isAllowedOrigin(origin, request.headers.host)) {
+      serverWarn("rejected ws upgrade from cross-origin", {
+        origin,
+        host: request.headers.host,
+      });
+      socket.destroy();
+      return;
+    }
 
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request);
-  });
-});
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request);
+    });
+  },
+);
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD });
 // Catch-all for any error bubbled to the WebSocketServer itself; without this
 // rare server-level errors (e.g. bad upgrade frames) would crash the process.
-wss.on('error', (err: Error) => {
-  console.warn('[server] wss error', err.message);
+wss.on("error", (err: Error) => {
+  console.warn("[server] wss error", err.message);
 });
 
 const clients = new Map<WebSocket, ClientMetadata>();
@@ -346,18 +391,22 @@ interface TurnSnapshot {
 const lobbyTurnSnapshots = new Map<string, TurnSnapshot>();
 
 // ── Logging ──────────────────────────────────────────────
-const LOG_PREFIX = '[server]';
+const LOG_PREFIX = "[server]";
 
 function serverLog(msg: string, ...args: unknown[]): void {
   console.log(`${LOG_PREFIX} ${msg}`, ...args);
 }
 
 function serverWarn(msg: string, detail?: unknown): void {
-  console.warn(`${LOG_PREFIX} ${msg}`, detail ?? '');
+  console.warn(`${LOG_PREFIX} ${msg}`, detail ?? "");
 }
 
 let stateLog: StateLogEntry[] = [];
-function logState(event: string, metadata?: ClientMetadata, details: Record<string, unknown> = {}): void {
+function logState(
+  event: string,
+  metadata?: ClientMetadata,
+  details: Record<string, unknown> = {},
+): void {
   if (!isDev()) return;
   stateLog.push({
     t: Date.now(),
@@ -365,20 +414,24 @@ function logState(event: string, metadata?: ClientMetadata, details: Record<stri
     playerId: metadata?.id?.slice(0, 8),
     lobbyId: metadata?.lobbyId?.slice(0, 8),
     name: metadata?.name,
-    ...details
+    ...details,
   });
   if (stateLog.length > 10000) stateLog.splice(0, 1000);
 }
 
-function validateState(playerId: string, _name: string | undefined, lobbyId: string | null | undefined): string {
-  if (!lobbyId) return 'disconnected';
+function validateState(
+  playerId: string,
+  _name: string | undefined,
+  lobbyId: string | null | undefined,
+): string {
+  if (!lobbyId) return "disconnected";
   const lobby = lobbies.get(lobbyId);
-  if (!lobby) return 'disconnected';
-  const player = lobby.players.find(p => p.id === playerId);
-  if (!player) return 'disconnected';
-  if (player.disconnected) return 'reconnecting';
-  if (lobby.game.started) return 'in_game';
-  return 'in_lobby';
+  if (!lobby) return "disconnected";
+  const player = lobby.players.find((p) => p.id === playerId);
+  if (!player) return "disconnected";
+  if (player.disconnected) return "reconnecting";
+  if (lobby.game.started) return "in_game";
+  return "in_lobby";
 }
 
 function createLobby(lobbyId: string): Lobby {
@@ -392,8 +445,9 @@ function createLobby(lobbyId: string): Lobby {
       direction: 1,
       started: false,
       state: LobbyGameState.normal,
-      drawingCount: 0, drawMode: 'chain'
-    }
+      drawingCount: 0,
+      drawMode: "chain",
+    },
   };
 }
 
@@ -404,10 +458,18 @@ function findOrCreateLobby(lobbyId: string): Lobby {
   return lobbies.get(lobbyId)!;
 }
 
-function broadcastToLobby(lobbyId: string, message: object, excludeClientId: string | null = null): void {
+function broadcastToLobby(
+  lobbyId: string,
+  message: object,
+  excludeClientId: string | null = null,
+): void {
   [...clients.keys()].forEach((client) => {
     const metadata = clients.get(client);
-    if (metadata && metadata.lobbyId === lobbyId && metadata.id !== excludeClientId) {
+    if (
+      metadata &&
+      metadata.lobbyId === lobbyId &&
+      metadata.id !== excludeClientId
+    ) {
       client.send(JSON.stringify(message));
     }
   });
@@ -418,7 +480,7 @@ function broadcastPlayers(lobbyId: string): void {
   if (!lobby) return;
 
   const message = {
-    action: 'players',
+    action: "players",
     players: lobby.players,
     turn: lobby.game.turn,
     lobbyId: lobbyId,
@@ -432,9 +494,15 @@ function broadcastPlayers(lobbyId: string): void {
 function checkStartGame(lobbyId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby) return;
-  const activePlayers = lobby.players.filter(p => !p.disconnected);
-  serverLog(`checkStartGame lobby=${lobbyId?.slice(0, 8)} total=${lobby.players.length} active=${activePlayers.length} activeReady=${activePlayers.filter(p => p.ready).length}`);
-  if (lobby.players.length >= 2 && activePlayers.length >= 2 && activePlayers.every(p => p.ready)) {
+  const activePlayers = lobby.players.filter((p) => !p.disconnected);
+  serverLog(
+    `checkStartGame lobby=${lobbyId?.slice(0, 8)} total=${lobby.players.length} active=${activePlayers.length} activeReady=${activePlayers.filter((p) => p.ready).length}`,
+  );
+  if (
+    lobby.players.length >= 2 &&
+    activePlayers.length >= 2 &&
+    activePlayers.every((p) => p.ready)
+  ) {
     startGame(lobbyId);
   }
 }
@@ -443,14 +511,28 @@ function createDeck(lobbyId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby) return;
 
-  const colors = ['red', 'yellow', 'green', 'blue'];
-  const types = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'skip', 'reverse', 'draw2'];
-  const wildTypes = ['wild', 'wild4'];
+  const colors = ["red", "yellow", "green", "blue"];
+  const types = [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "skip",
+    "reverse",
+    "draw2",
+  ];
+  const wildTypes = ["wild", "wild4"];
 
   for (const color of colors) {
     for (const type of types) {
       lobby.game.deck.push({ color, type });
-      if (type !== '0') {
+      if (type !== "0") {
         lobby.game.deck.push({ color, type });
       }
     }
@@ -469,26 +551,47 @@ function shuffleDeck(lobbyId: string): void {
 
   for (let i = lobby.game.deck.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [lobby.game.deck[i], lobby.game.deck[j]] = [lobby.game.deck[j], lobby.game.deck[i]];
+    [lobby.game.deck[i], lobby.game.deck[j]] = [
+      lobby.game.deck[j],
+      lobby.game.deck[i],
+    ];
   }
 }
 
 function generateRandomCard(): Card {
-  const colors = ['red', 'yellow', 'green', 'blue'];
-  const types = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'skip', 'reverse', 'draw2'];
+  const colors = ["red", "yellow", "green", "blue"];
+  const types = [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "skip",
+    "reverse",
+    "draw2",
+  ];
   const r = Math.random();
-  if (r < 0.05) return { type: 'wild4' };
-  if (r < 0.10) return { type: 'wild' };
+  if (r < 0.05) return { type: "wild4" };
+  if (r < 0.1) return { type: "wild" };
   return {
     color: colors[Math.floor(Math.random() * colors.length)],
-    type: types[Math.floor(Math.random() * types.length)]
+    type: types[Math.floor(Math.random() * types.length)],
   };
 }
 
-function drawCardsFromDeck(lobby: Lobby, lobbyId: string, count: number): Card[] {
+function drawCardsFromDeck(
+  lobby: Lobby,
+  lobbyId: string,
+  count: number,
+): Card[] {
   const drawn: Card[] = [];
   while (drawn.length < count) {
-    let card: Card
+    let card: Card;
 
     if (false && lobby.game.deck.length > 1) {
       // disabled
@@ -524,7 +627,7 @@ function dealCards(lobbyId: string): void {
 function startGame(lobbyId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby) return;
-  const activePlayers = lobby.players.filter(p => !p.disconnected);
+  const activePlayers = lobby.players.filter((p) => !p.disconnected);
   if (activePlayers.length < 2) return;
 
   lobby.game.started = true;
@@ -533,10 +636,14 @@ function startGame(lobbyId: string): void {
   shuffleDeck(lobbyId);
   dealCards(lobbyId);
 
-  let firstCardIndex = lobby.game.deck.findIndex(card => card.type !== 'wild' && card.type !== 'wild4');
+  let firstCardIndex = lobby.game.deck.findIndex(
+    (card) => card.type !== "wild" && card.type !== "wild4",
+  );
   if (firstCardIndex === -1) {
     shuffleDeck(lobbyId);
-    firstCardIndex = lobby.game.deck.findIndex(card => card.type !== 'wild' && card.type !== 'wild4');
+    firstCardIndex = lobby.game.deck.findIndex(
+      (card) => card.type !== "wild" && card.type !== "wild4",
+    );
   }
   lobby.game.discardPile.push(lobby.game.deck.splice(firstCardIndex, 1)[0]);
 
@@ -548,16 +655,16 @@ function startGame(lobbyId: string): void {
   [...clients.keys()].forEach((client) => {
     const metadata = clients.get(client);
     if (metadata && metadata.lobbyId === lobbyId) {
-      const player = lobby.players.find(p => p.id === metadata.id);
+      const player = lobby.players.find((p) => p.id === metadata.id);
       if (!player) return;
       const message = {
-        action: 'start',
+        action: "start",
         players: sanitizePlayersForClient(lobby.players),
         discardPile: lobby.game.discardPile,
         turn: lobby.game.turn,
         direction: lobby.game.direction,
-            gameState: lobby.game.state,
-            drawingCount: lobby.game.drawingCount,
+        gameState: lobby.game.state,
+        drawingCount: lobby.game.drawingCount,
         hand: player.hand,
         id: metadata.id,
         turnDeadline,
@@ -574,13 +681,22 @@ function broadcastWin(lobbyId: string, winnerName: string): void {
   if (!lobby) return;
 
   resetTurnTimerState(lobbyId);
-  broadcastToLobby(lobbyId, { action: 'win', winner: winnerName });
+  broadcastToLobby(lobbyId, { action: "win", winner: winnerName });
 
   for (const [, meta] of clients) {
     if (meta.lobbyId === lobbyId) meta.lobbyId = null;
   }
   lobby.players.length = 0;
-  lobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false, state: LobbyGameState.normal, drawingCount: 0, drawMode: 'chain' };
+  lobby.game = {
+    deck: [],
+    discardPile: [],
+    turn: 0,
+    direction: 1,
+    started: false,
+    state: LobbyGameState.normal,
+    drawingCount: 0,
+    drawMode: "chain",
+  };
   startedLobbies.delete(lobbyId);
 }
 
@@ -590,21 +706,34 @@ function broadcastGameAborted(lobbyId: string, excludePlayerId: string): void {
 
   resetTurnTimerState(lobbyId);
   const ahg = allHumansGoneTimers.get(lobbyId);
-  if (ahg) { clearTimeout(ahg); allHumansGoneTimers.delete(lobbyId); }
-  broadcastToLobby(lobbyId, { action: 'game_aborted' }, excludePlayerId);
+  if (ahg) {
+    clearTimeout(ahg);
+    allHumansGoneTimers.delete(lobbyId);
+  }
+  broadcastToLobby(lobbyId, { action: "game_aborted" }, excludePlayerId);
 
   for (const [client, meta] of clients) {
-    if (meta.lobbyId === lobbyId && meta.id !== excludePlayerId) meta.lobbyId = null;
+    if (meta.lobbyId === lobbyId && meta.id !== excludePlayerId)
+      meta.lobbyId = null;
   }
   lobby.players = [];
-  lobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false, state: LobbyGameState.normal, drawingCount: 0, drawMode: 'chain' };
+  lobby.game = {
+    deck: [],
+    discardPile: [],
+    turn: 0,
+    direction: 1,
+    started: false,
+    state: LobbyGameState.normal,
+    drawingCount: 0,
+    drawMode: "chain",
+  };
   startedLobbies.delete(lobbyId);
 }
 
 function checkGameAborted(lobbyId: string, excludePlayerId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby || !lobby.game.started) return;
-  const realPlayers = lobby.players.filter(p => !p.isAI);
+  const realPlayers = lobby.players.filter((p) => !p.isAI);
   if (realPlayers.length === 0) {
     broadcastGameAborted(lobbyId, excludePlayerId);
   }
@@ -612,7 +741,7 @@ function checkGameAborted(lobbyId: string, excludePlayerId: string): void {
 
 function generateAIName(lobby: Lobby): string {
   let index = 1;
-  while (lobby.players.some(p => p.name === `AI-${index}`)) {
+  while (lobby.players.some((p) => p.name === `AI-${index}`)) {
     index++;
   }
   return `AI-${index}`;
@@ -682,10 +811,11 @@ function scheduleTurnTimeout(lobbyId: string): void {
   }
 
   const snap = lobbyTurnSnapshots.get(lobbyId);
-  const sameTurn = !!snap
-    && snap.playerId === currentPlayer.id
-    && snap.turnIndex === lobby.game.turn
-    && snap.direction === lobby.game.direction;
+  const sameTurn =
+    !!snap &&
+    snap.playerId === currentPlayer.id &&
+    snap.turnIndex === lobby.game.turn &&
+    snap.direction === lobby.game.direction;
 
   const existing = turnTimers.get(lobbyId);
   // Dev pause: if the existing timer is paused for the same turn, leave
@@ -770,12 +900,14 @@ function onTurnTimeout(lobbyId: string, expectedPlayerId: string): void {
   if (!currentPlayer || currentPlayer.id !== expectedPlayerId) return;
   if (currentPlayer.isAI || currentPlayer.disconnected) return;
 
-  serverLog(`turn timeout in ${lobbyId.slice(0, 8)} — auto-drawing for ${currentPlayer.name}`);
+  serverLog(
+    `turn timeout in ${lobbyId.slice(0, 8)} — auto-drawing for ${currentPlayer.name}`,
+  );
   // Notify everyone in the lobby so the client can flash a status line.
   // We send before auto-draw so the message lands in the same render frame
   // as the resulting update.
   broadcastToLobby(lobbyId, {
-    action: 'turn_timeout',
+    action: "turn_timeout",
     playerId: currentPlayer.id,
     playerName: currentPlayer.name,
   });
@@ -793,11 +925,11 @@ function performAIMove(lobbyId: string): void {
 
   const decision = decideMove(lobby);
 
-  if (decision.type === 'play') {
+  if (decision.type === "play") {
     handlePlay(lobbyId, currentPlayer.id, decision.card);
-  } else if (decision.type === 'play_multiple') {
+  } else if (decision.type === "play_multiple") {
     handlePlayMultiple(lobbyId, currentPlayer.id, decision.cards);
-  } else if (decision.type === 'draw') {
+  } else if (decision.type === "draw") {
     handleDraw(lobbyId, currentPlayer.id);
   }
 }
@@ -815,19 +947,23 @@ function scheduleAIMove(lobbyId: string): void {
   }
 }
 
-function handlePlayMultiple(lobbyId: string, playerId: string, cards: Card[]): void {
+function handlePlayMultiple(
+  lobbyId: string,
+  playerId: string,
+  cards: Card[],
+): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby) return;
 
-  const player = lobby.players.find(p => p.id === playerId);
-  const playerIndex = lobby.players.findIndex(p => p.id === playerId);
+  const player = lobby.players.find((p) => p.id === playerId);
+  const playerIndex = lobby.players.findIndex((p) => p.id === playerId);
 
   if (!player || lobby.game.turn !== playerIndex) {
     return;
   }
 
   const firstCard = cards[0];
-  if (!cards.every(card => card.type === firstCard.type)) {
+  if (!cards.every((card) => card.type === firstCard.type)) {
     return;
   }
 
@@ -844,10 +980,12 @@ function handlePlayMultiple(lobbyId: string, playerId: string, cards: Card[]): v
   const indicesToRemove: number[] = [];
   for (const card of cards) {
     let cardIndex: number;
-    if (card.type === 'wild' || card.type === 'wild4') {
-      cardIndex = handCopy.findIndex(c => c && c.type === card.type);
+    if (card.type === "wild" || card.type === "wild4") {
+      cardIndex = handCopy.findIndex((c) => c && c.type === card.type);
     } else {
-      cardIndex = handCopy.findIndex(c => c && c.color === card.color && c.type === card.type);
+      cardIndex = handCopy.findIndex(
+        (c) => c && c.color === card.color && c.type === card.type,
+      );
     }
     if (cardIndex < 0) {
       return;
@@ -868,22 +1006,32 @@ function handlePlayMultiple(lobbyId: string, playerId: string, cards: Card[]): v
 
   const cardCount = cards.length;
 
-  if (lastCard.type === 'skip') {
+  if (lastCard.type === "skip") {
     // In chain mode, breaking the chain with skip/reverse must still apply
     // the accumulated penalty to the player who broke it. Without this the
     // chain effect is silently dropped (TODO #3 — "普通牌在部分情况下会使
     // 得链式加牌的加牌效果被跳过").
-    if (lobby.game.drawMode !== 'direct' && lobby.game.state === LobbyGameState.drawing) {
+    if (
+      lobby.game.drawMode !== "direct" &&
+      lobby.game.state === LobbyGameState.drawing
+    ) {
       const penalty = lobby.game.drawingCount;
       if (penalty > 0 && player) {
         player.hand!.push(...drawCardsFromDeck(lobby, lobbyId, penalty));
       }
     }
-    lobby.game.turn = (lobby.game.turn + (cardCount + 1) * lobby.game.direction + lobby.players.length) % lobby.players.length;
+    lobby.game.turn =
+      (lobby.game.turn +
+        (cardCount + 1) * lobby.game.direction +
+        lobby.players.length) %
+      lobby.players.length;
     lobby.game.state = LobbyGameState.normal;
     lobby.game.drawingCount = 0;
-  } else if (lastCard.type === 'reverse') {
-    if (lobby.game.drawMode !== 'direct' && lobby.game.state === LobbyGameState.drawing) {
+  } else if (lastCard.type === "reverse") {
+    if (
+      lobby.game.drawMode !== "direct" &&
+      lobby.game.state === LobbyGameState.drawing
+    ) {
       const penalty = lobby.game.drawingCount;
       if (penalty > 0 && player) {
         player.hand!.push(...drawCardsFromDeck(lobby, lobbyId, penalty));
@@ -892,29 +1040,42 @@ function handlePlayMultiple(lobbyId: string, playerId: string, cards: Card[]): v
     if (cardCount % 2 === 1) {
       lobby.game.direction *= -1;
     }
-    lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+    lobby.game.turn =
+      (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+      lobby.players.length;
     lobby.game.state = LobbyGameState.normal;
     lobby.game.drawingCount = 0;
-  } else if (lastCard.type === 'draw2' || lastCard.type === 'wild4') {
-    const n = (lastCard.type === 'draw2' ? 2 : 4) * cardCount;
-    if (lobby.game.drawMode === 'direct') {
-      const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+  } else if (lastCard.type === "draw2" || lastCard.type === "wild4") {
+    const n = (lastCard.type === "draw2" ? 2 : 4) * cardCount;
+    if (lobby.game.drawMode === "direct") {
+      const nextPlayerIndex =
+        (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+        lobby.players.length;
       const nextPlayer = lobby.players[nextPlayerIndex];
       nextPlayer.hand!.push(...drawCardsFromDeck(lobby, lobbyId, n));
-      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+      lobby.game.turn =
+        (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+        lobby.players.length;
       lobby.game.state = LobbyGameState.normal;
       lobby.game.drawingCount = 0;
     } else if (lobby.game.state === LobbyGameState.normal) {
       lobby.game.state = LobbyGameState.drawing;
       lobby.game.drawingCount = n;
-      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+      lobby.game.turn =
+        (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+        lobby.players.length;
     } else {
       lobby.game.drawingCount += n;
-      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+      lobby.game.turn =
+        (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+        lobby.players.length;
     }
   } else {
     // Non-draw card: break chain (chain mode only)
-    if (lobby.game.drawMode !== 'direct' && lobby.game.state === LobbyGameState.drawing) {
+    if (
+      lobby.game.drawMode !== "direct" &&
+      lobby.game.state === LobbyGameState.drawing
+    ) {
       const penalty = lobby.game.drawingCount;
       lobby.game.state = LobbyGameState.normal;
       lobby.game.drawingCount = 0;
@@ -922,7 +1083,9 @@ function handlePlayMultiple(lobbyId: string, playerId: string, cards: Card[]): v
         player.hand!.push(...drawCardsFromDeck(lobby, lobbyId, penalty));
       }
     }
-    lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+    lobby.game.turn =
+      (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+      lobby.players.length;
   }
 
   broadcastGameUpdate(lobbyId);
@@ -936,8 +1099,8 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby) return;
 
-  const player = lobby.players.find(p => p.id === playerId);
-  const playerIndex = lobby.players.findIndex(p => p.id === playerId);
+  const player = lobby.players.find((p) => p.id === playerId);
+  const playerIndex = lobby.players.findIndex((p) => p.id === playerId);
 
   if (lobby.game.turn !== playerIndex) {
     return;
@@ -945,10 +1108,12 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
 
   if (isValidMove(lobbyId, card)) {
     let cardIndex: number;
-    if (card.type === 'wild' || card.type === 'wild4') {
-      cardIndex = player!.hand!.findIndex(c => c.type === card.type);
+    if (card.type === "wild" || card.type === "wild4") {
+      cardIndex = player!.hand!.findIndex((c) => c.type === card.type);
     } else {
-      cardIndex = player!.hand!.findIndex(c => c.color === card.color && c.type === card.type);
+      cardIndex = player!.hand!.findIndex(
+        (c) => c.color === card.color && c.type === card.type,
+      );
     }
 
     // Reject plays of cards that are not actually in the player's hand:
@@ -963,50 +1128,71 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
 
     lobby.game.discardPile.push(card);
 
-    if (card.type === 'skip') {
+    if (card.type === "skip") {
       // Chain-breaking via skip/reverse must still apply the penalty in
       // chain mode (TODO #3). Without this, the player breaks the chain
       // for free.
-      if (lobby.game.drawMode !== 'direct' && lobby.game.state === LobbyGameState.drawing) {
+      if (
+        lobby.game.drawMode !== "direct" &&
+        lobby.game.state === LobbyGameState.drawing
+      ) {
         const penalty = lobby.game.drawingCount;
         if (penalty > 0) {
           player!.hand!.push(...drawCardsFromDeck(lobby, lobbyId, penalty));
         }
       }
-      lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
+      lobby.game.turn =
+        (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) %
+        lobby.players.length;
       lobby.game.state = LobbyGameState.normal;
       lobby.game.drawingCount = 0;
-    } else if (card.type === 'reverse') {
-      if (lobby.game.drawMode !== 'direct' && lobby.game.state === LobbyGameState.drawing) {
+    } else if (card.type === "reverse") {
+      if (
+        lobby.game.drawMode !== "direct" &&
+        lobby.game.state === LobbyGameState.drawing
+      ) {
         const penalty = lobby.game.drawingCount;
         if (penalty > 0) {
           player!.hand!.push(...drawCardsFromDeck(lobby, lobbyId, penalty));
         }
       }
       lobby.game.direction *= -1;
-      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+      lobby.game.turn =
+        (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+        lobby.players.length;
       lobby.game.state = LobbyGameState.normal;
       lobby.game.drawingCount = 0;
-    } else if (card.type === 'draw2' || card.type === 'wild4') {
-      const n = card.type === 'draw2' ? 2 : 4;
-      if (lobby.game.drawMode === 'direct') {
-        const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+    } else if (card.type === "draw2" || card.type === "wild4") {
+      const n = card.type === "draw2" ? 2 : 4;
+      if (lobby.game.drawMode === "direct") {
+        const nextPlayerIndex =
+          (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+          lobby.players.length;
         const nextPlayer = lobby.players[nextPlayerIndex];
         nextPlayer.hand!.push(...drawCardsFromDeck(lobby, lobbyId, n));
-        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+        lobby.game.turn =
+          (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+          lobby.players.length;
         lobby.game.state = LobbyGameState.normal;
         lobby.game.drawingCount = 0;
       } else if (lobby.game.state === LobbyGameState.normal) {
         lobby.game.state = LobbyGameState.drawing;
         lobby.game.drawingCount = n;
-        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+        lobby.game.turn =
+          (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+          lobby.players.length;
       } else {
         lobby.game.drawingCount += n;
-        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+        lobby.game.turn =
+          (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+          lobby.players.length;
       }
     } else {
       // Non-draw card: break chain (chain mode only)
-      if (lobby.game.drawMode !== 'direct' && lobby.game.state === LobbyGameState.drawing) {
+      if (
+        lobby.game.drawMode !== "direct" &&
+        lobby.game.state === LobbyGameState.drawing
+      ) {
         const penalty = lobby.game.drawingCount;
         lobby.game.state = LobbyGameState.normal;
         lobby.game.drawingCount = 0;
@@ -1014,7 +1200,9 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
           player!.hand!.push(...drawCardsFromDeck(lobby, lobbyId, penalty));
         }
       }
-      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+      lobby.game.turn =
+        (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+        lobby.players.length;
     }
 
     broadcastGameUpdate(lobbyId);
@@ -1025,12 +1213,11 @@ function handlePlay(lobbyId: string, playerId: string, card: Card): void {
   }
 }
 
-
 function handleDraw(lobbyId: string, playerId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby || !lobby.game.started) return;
 
-  const playerIndex = lobby.players.findIndex(p => p.id === playerId);
+  const playerIndex = lobby.players.findIndex((p) => p.id === playerId);
 
   if (lobby.game.turn !== playerIndex) {
     return;
@@ -1048,13 +1235,17 @@ function handleDraw(lobbyId: string, playerId: string): void {
     } else {
       player.hand!.push(...drawCardsFromDeck(lobby, lobbyId, 1));
     }
-    lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+    lobby.game.turn =
+      (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+      lobby.players.length;
     broadcastGameUpdate(lobbyId);
     return;
   }
 
   if (player.hand!.length >= MAX_HAND_CARDS) {
-    lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+    lobby.game.turn =
+      (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+      lobby.players.length;
     broadcastGameUpdate(lobbyId);
     return;
   }
@@ -1063,7 +1254,9 @@ function handleDraw(lobbyId: string, playerId: string): void {
   if (drawn.length > 0) {
     player.hand!.push(drawn[0]);
   }
-  lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+  lobby.game.turn =
+    (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+    lobby.players.length;
   broadcastGameUpdate(lobbyId);
 }
 
@@ -1073,10 +1266,14 @@ function isValidMove(lobbyId: string, card: Card): boolean {
 
   if (lobby.game.discardPile.length === 0) return true;
   const topCard = lobby.game.discardPile[lobby.game.discardPile.length - 1];
-  const isNCard = (t: string) => t === 'draw2' || t === 'wild4';
-  return card.color === topCard.color || card.type === topCard.type
-    || (isNCard(card.type) && isNCard(topCard.type))
-    || card.type === 'wild' || card.type === 'wild4';
+  const isNCard = (t: string) => t === "draw2" || t === "wild4";
+  return (
+    card.color === topCard.color ||
+    card.type === topCard.type ||
+    (isNCard(card.type) && isNCard(topCard.type)) ||
+    card.type === "wild" ||
+    card.type === "wild4"
+  );
 }
 
 function checkAutoUno(_lobbyId: string, player: Player): boolean {
@@ -1087,8 +1284,10 @@ function checkAutoUno(_lobbyId: string, player: Player): boolean {
 
   if (player.hand && player.hand.length > 1) {
     const firstCard = player.hand[0];
-    if (firstCard.type !== 'wild' && firstCard.type !== 'wild4') {
-      const allSameType = player.hand.every(card => card.type === firstCard.type);
+    if (firstCard.type !== "wild" && firstCard.type !== "wild4") {
+      const allSameType = player.hand.every(
+        (card) => card.type === firstCard.type,
+      );
       if (allSameType) {
         player.uno = true;
         return true;
@@ -1101,7 +1300,7 @@ function checkAutoUno(_lobbyId: string, player: Player): boolean {
 }
 
 function sanitizePlayersForClient(players: Player[]): object[] {
-  return players.map(p => {
+  return players.map((p) => {
     const { hand, ...rest } = p;
     return { ...rest, cardCount: hand ? hand.length : 0 };
   });
@@ -1111,7 +1310,7 @@ function broadcastGameUpdate(lobbyId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby) return;
 
-  lobby.players.forEach(player => {
+  lobby.players.forEach((player) => {
     if (player.hand) {
       checkAutoUno(lobbyId, player);
     }
@@ -1127,9 +1326,9 @@ function broadcastGameUpdate(lobbyId: string): void {
   [...clients.keys()].forEach((client) => {
     const metadata = clients.get(client);
     if (metadata && metadata.lobbyId === lobbyId) {
-      const player = lobby.players.find(p => p.id === metadata.id);
+      const player = lobby.players.find((p) => p.id === metadata.id);
       const message: Record<string, unknown> = {
-        action: 'update',
+        action: "update",
         players: sanitizePlayersForClient(lobby.players),
         discardPile: lobby.game.discardPile,
         turn: lobby.game.turn,
@@ -1153,7 +1352,7 @@ function handleUno(lobbyId: string, playerId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby) return;
 
-  const player = lobby.players.find(p => p.id === playerId);
+  const player = lobby.players.find((p) => p.id === playerId);
   if (player && player.hand && player.hand.length === 1) {
     player.uno = true;
     broadcastPlayers(lobbyId);
@@ -1169,17 +1368,21 @@ function uuidv4(): string {
   // Per RFC 4122 §4.4: set version (4) and variant (10).
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = bytes.toString('hex');
+  const hex = bytes.toString("hex");
   return (
-    hex.slice(0, 8) + '-' +
-    hex.slice(8, 12) + '-' +
-    hex.slice(12, 16) + '-' +
-    hex.slice(16, 20) + '-' +
+    hex.slice(0, 8) +
+    "-" +
+    hex.slice(8, 12) +
+    "-" +
+    hex.slice(12, 16) +
+    "-" +
+    hex.slice(16, 20) +
+    "-" +
     hex.slice(20, 32)
   );
 }
 
-wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
+wss.on("connection", (ws: WebSocket, _req: IncomingMessage) => {
   const id = uuidv4();
   const metadata: ClientMetadata = { id };
   clients.set(ws, metadata);
@@ -1189,7 +1392,7 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
   // them forever.
   let parseErrorCount = 0;
 
-  ws.send(JSON.stringify({ action: 'init', dev: isDev(), id }));
+  ws.send(JSON.stringify({ action: "init", dev: isDev(), id }));
   serverLog(`client connected ${id}`);
 
   // The ws library raises an 'error' event on the WebSocket instance for
@@ -1197,52 +1400,70 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
   // Without a listener Node treats it as an unhandled error and kills the
   // whole process — i.e. any client could crash the server with a single
   // bad frame. Just log it; the socket is closed automatically afterwards.
-  ws.on('error', (err: Error) => {
-    serverWarn('ws error', { id, message: err.message, code: (err as { code?: string }).code });
+  ws.on("error", (err: Error) => {
+    serverWarn("ws error", {
+      id,
+      message: err.message,
+      code: (err as { code?: string }).code,
+    });
   });
 
-  ws.on('message', (messageAsString: Buffer | string) => {
+  ws.on("message", (messageAsString: Buffer | string) => {
     let message: ClientMessage;
     try {
       message = JSON.parse(messageAsString.toString());
     } catch (_e) {
       parseErrorCount++;
       if (parseErrorCount >= MAX_PARSE_ERRORS_PER_CONN) {
-        serverWarn('closing ws after too many invalid messages', { id, parseErrorCount });
-        try { ws.close(1008, 'invalid messages'); } catch {}
+        serverWarn("closing ws after too many invalid messages", {
+          id,
+          parseErrorCount,
+        });
+        try {
+          ws.close(1008, "invalid messages");
+        } catch {}
       }
       return;
     }
     // Reject anything that isn't a plain object — the rest of the dispatcher
     // assumes `message.action` is a string and accesses other named fields.
-    if (!message || typeof message !== 'object' || Array.isArray(message)) {
+    if (!message || typeof message !== "object" || Array.isArray(message)) {
       parseErrorCount++;
       if (parseErrorCount >= MAX_PARSE_ERRORS_PER_CONN) {
-        try { ws.close(1008, 'invalid messages'); } catch {}
+        try {
+          ws.close(1008, "invalid messages");
+        } catch {}
       }
       return;
     }
 
     const metadata = clients.get(ws)!;
-    logState('msg', metadata, { action: message.action });
-    if (metadata && metadata.lobbyId && message.action !== 'reconnect' && message.action !== 'join') {
+    logState("msg", metadata, { action: message.action });
+    if (
+      metadata &&
+      metadata.lobbyId &&
+      message.action !== "reconnect" &&
+      message.action !== "join"
+    ) {
       const state = validateState(metadata.id, metadata.name, metadata.lobbyId);
-      if (state === 'disconnected') {
-        serverLog(`state mismatch: player ${metadata.id?.slice(0, 8)} is ${state}, resetting lobbyId`);
+      if (state === "disconnected") {
+        serverLog(
+          `state mismatch: player ${metadata.id?.slice(0, 8)} is ${state}, resetting lobbyId`,
+        );
         metadata.lobbyId = null;
       }
     }
 
-    if (!(message.action || '').startsWith('dev_')) {
+    if (!(message.action || "").startsWith("dev_")) {
       switch (message.action) {
-        case 'join': {
+        case "join": {
           if (!isValidPlayerName(message.name)) {
-            ws.send(JSON.stringify(errorResponse('INVALID_PLAYER_NAME')));
+            ws.send(JSON.stringify(errorResponse("INVALID_PLAYER_NAME")));
             return;
           }
           metadata.name = message.name;
           if (!isValidLobbyId(message.lobbyId)) {
-            ws.send(JSON.stringify(errorResponse('NEED_LOBBY_NAME')));
+            ws.send(JSON.stringify(errorResponse("NEED_LOBBY_NAME")));
             return;
           }
           // Normalize lobby ID so case differences route to the same room.
@@ -1253,7 +1474,12 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           let lobby = findOrCreateLobby(message.lobbyId);
 
           if (startedLobbies.has(lobby.id)) {
-            const disconnectedPlayer = lobby.players.find(p => p.id === message.playerId && p.disconnected && p.name.toLowerCase() === (message.name || '').toLowerCase());
+            const disconnectedPlayer = lobby.players.find(
+              (p) =>
+                p.id === message.playerId &&
+                p.disconnected &&
+                p.name.toLowerCase() === (message.name || "").toLowerCase(),
+            );
             if (disconnectedPlayer) {
               const oldTimer = disconnectTimers.get(disconnectedPlayer.id);
               if (oldTimer) clearTimeout(oldTimer);
@@ -1266,31 +1492,46 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
               metadata.name = disconnectedPlayer.name;
               metadata.lobbyId = message.lobbyId;
               metadata.id = disconnectedPlayer.id;
-              ws.send(JSON.stringify({ action: 'init', id: disconnectedPlayer.id, dev: isDev() }));
+              ws.send(
+                JSON.stringify({
+                  action: "init",
+                  id: disconnectedPlayer.id,
+                  dev: isDev(),
+                }),
+              );
               broadcastPlayers(message.lobbyId);
-              ws.send(JSON.stringify({
-                action: 'start',
-                id: disconnectedPlayer.id,
-                players: sanitizePlayersForClient(lobby.players),
-                discardPile: lobby.game.discardPile,
-                turn: lobby.game.turn,
-                direction: lobby.game.direction,
-                hand: disconnectedPlayer.hand
-              }));
+              ws.send(
+                JSON.stringify({
+                  action: "start",
+                  id: disconnectedPlayer.id,
+                  players: sanitizePlayersForClient(lobby.players),
+                  discardPile: lobby.game.discardPile,
+                  turn: lobby.game.turn,
+                  direction: lobby.game.direction,
+                  hand: disconnectedPlayer.hand,
+                }),
+              );
               return;
             }
             // No real players left — abort and let them create a fresh lobby
-            if (!lobby.players.some(p => !p.isAI)) {
-              broadcastGameAborted(lobby.id, '');
+            if (!lobby.players.some((p) => !p.isAI)) {
+              broadcastGameAborted(lobby.id, "");
             } else {
-              ws.send(JSON.stringify({ action: 'spectate_offer', lobbyId: lobby.id }));
+              ws.send(
+                JSON.stringify({ action: "spectate_offer", lobbyId: lobby.id }),
+              );
             }
             return;
           }
 
-          const existingPlayer = lobby.players.find(p => p.name.toLowerCase() === (message.name || '').toLowerCase());
+          const existingPlayer = lobby.players.find(
+            (p) => p.name.toLowerCase() === (message.name || "").toLowerCase(),
+          );
           if (existingPlayer) {
-            if (existingPlayer.id === message.playerId || existingPlayer.disconnected) {
+            if (
+              existingPlayer.id === message.playerId ||
+              existingPlayer.disconnected
+            ) {
               const oldTimer = disconnectTimers.get(existingPlayer.id);
               if (oldTimer) clearTimeout(oldTimer);
               disconnectTimers.delete(existingPlayer.id);
@@ -1301,15 +1542,24 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
               existingPlayer.disconnected = false;
               const dfk = existingPlayer.id;
               const dft = deferTimers.get(dfk);
-              if (dft) { clearTimeout(dft); deferTimers.delete(dfk); }
+              if (dft) {
+                clearTimeout(dft);
+                deferTimers.delete(dfk);
+              }
               metadata.name = existingPlayer.name;
               metadata.lobbyId = message.lobbyId;
               metadata.id = existingPlayer.id;
-              ws.send(JSON.stringify({ action: 'init', id: existingPlayer.id, dev: isDev() }));
+              ws.send(
+                JSON.stringify({
+                  action: "init",
+                  id: existingPlayer.id,
+                  dev: isDev(),
+                }),
+              );
               broadcastPlayers(message.lobbyId);
               return;
             }
-            ws.send(JSON.stringify(errorResponse('NAME_DUPLICATE')));
+            ws.send(JSON.stringify(errorResponse("NAME_DUPLICATE")));
             return;
           }
 
@@ -1320,31 +1570,34 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             id: metadata.id,
             name: metadata.name!,
             ready: false,
-            isCreator: isCreator
+            isCreator: isCreator,
           };
           lobby.players.push(player);
-          sessions.set(metadata.id, { name: metadata.name!, lobbyId: metadata.lobbyId! });
+          sessions.set(metadata.id, {
+            name: metadata.name!,
+            lobbyId: metadata.lobbyId!,
+          });
           broadcastPlayers(metadata.lobbyId!);
           serverLog(`player jointed to ${lobby.id} :`, player);
           return;
         }
 
-        case 'add_ai': {
+        case "add_ai": {
           const lobby = findOrCreateLobby(metadata.lobbyId!);
-          const creator = lobby.players.find(p => p.id === metadata.id);
+          const creator = lobby.players.find((p) => p.id === metadata.id);
           if (!creator || !creator.isCreator) {
-            ws.send(JSON.stringify(errorResponse('CREATOR_ONLY')));
+            ws.send(JSON.stringify(errorResponse("CREATOR_ONLY")));
             return;
           }
           if (startedLobbies.has(lobby.id)) {
-            ws.send(JSON.stringify(errorResponse('GAME_ALREADY_STARTED')));
+            ws.send(JSON.stringify(errorResponse("GAME_ALREADY_STARTED")));
             return;
           }
           // Cap AI count: each AI runs setTimeout/decideMove and bloats every
           // players broadcast, so an unbounded count is a CPU + bandwidth DoS.
-          const aiCount = lobby.players.filter(p => p.isAI).length;
+          const aiCount = lobby.players.filter((p) => p.isAI).length;
           if (aiCount >= MAX_AI_PER_LOBBY) {
-            ws.send(JSON.stringify(errorResponse('AI_LIMIT_REACHED')));
+            ws.send(JSON.stringify(errorResponse("AI_LIMIT_REACHED")));
             return;
           }
           const aiId = uuidv4();
@@ -1354,23 +1607,25 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             name: aiName,
             ready: true,
             isCreator: false,
-            isAI: true
+            isAI: true,
           };
           lobby.players.push(aiPlayer);
           broadcastPlayers(metadata.lobbyId!);
           return;
         }
 
-        case 'ai_ready': {
+        case "ai_ready": {
           const lobby = findOrCreateLobby(metadata.lobbyId!);
-          const creator = lobby.players.find(p => p.id === metadata.id);
+          const creator = lobby.players.find((p) => p.id === metadata.id);
           if (!creator || !creator.isCreator) {
-            ws.send(JSON.stringify(errorResponse('CREATOR_ONLY_AI_READY')));
+            ws.send(JSON.stringify(errorResponse("CREATOR_ONLY_AI_READY")));
             return;
           }
-          const aiPlayer = lobby.players.find(p => p.id === message.playerId && p.isAI);
+          const aiPlayer = lobby.players.find(
+            (p) => p.id === message.playerId && p.isAI,
+          );
           if (!aiPlayer) {
-            ws.send(JSON.stringify(errorResponse('AI_NOT_FOUND')));
+            ws.send(JSON.stringify(errorResponse("AI_NOT_FOUND")));
             return;
           }
           aiPlayer.ready = !aiPlayer.ready;
@@ -1379,20 +1634,22 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           return;
         }
 
-        case 'remove_ai': {
+        case "remove_ai": {
           const lobby = findOrCreateLobby(metadata.lobbyId!);
-          const creator = lobby.players.find(p => p.id === metadata.id);
+          const creator = lobby.players.find((p) => p.id === metadata.id);
           if (!creator || !creator.isCreator) {
-            ws.send(JSON.stringify(errorResponse('CREATOR_ONLY_KICK_AI')));
+            ws.send(JSON.stringify(errorResponse("CREATOR_ONLY_KICK_AI")));
             return;
           }
           if (startedLobbies.has(lobby.id)) {
-            ws.send(JSON.stringify(errorResponse('GAME_ALREADY_STARTED')));
+            ws.send(JSON.stringify(errorResponse("GAME_ALREADY_STARTED")));
             return;
           }
-          const aiIndex = lobby.players.findIndex(p => p.id === message.playerId && p.isAI);
+          const aiIndex = lobby.players.findIndex(
+            (p) => p.id === message.playerId && p.isAI,
+          );
           if (aiIndex === -1) {
-            ws.send(JSON.stringify(errorResponse('AI_NOT_FOUND')));
+            ws.send(JSON.stringify(errorResponse("AI_NOT_FOUND")));
             return;
           }
           clearAITimeout(lobby.players[aiIndex].id);
@@ -1401,16 +1658,16 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           return;
         }
 
-        case 'transfer_creator': {
+        case "transfer_creator": {
           const lobby = findOrCreateLobby(metadata.lobbyId!);
-          const from = lobby.players.find(p => p.id === metadata.id);
+          const from = lobby.players.find((p) => p.id === metadata.id);
           if (!from || !from.isCreator) {
-            ws.send(JSON.stringify(errorResponse('CREATOR_ONLY_TRANSFER')));
+            ws.send(JSON.stringify(errorResponse("CREATOR_ONLY_TRANSFER")));
             return;
           }
-          const to = lobby.players.find(p => p.id === message.playerId);
+          const to = lobby.players.find((p) => p.id === message.playerId);
           if (!to || to.isAI || to.disconnected) {
-            ws.send(JSON.stringify(errorResponse('TARGET_INVALID')));
+            ws.send(JSON.stringify(errorResponse("TARGET_INVALID")));
             return;
           }
           from.isCreator = false;
@@ -1419,75 +1676,136 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           return;
         }
 
-        case 'set_draw_mode': {
+        case "set_draw_mode": {
           const lobby = lobbies.get(metadata.lobbyId!);
-          if (!lobby) { ws.send(JSON.stringify(errorResponse('NOT_IN_LOBBY'))); return; }
-          const creator = lobby.players.find(p => p.id === metadata.id);
+          if (!lobby) {
+            ws.send(JSON.stringify(errorResponse("NOT_IN_LOBBY")));
+            return;
+          }
+          const creator = lobby.players.find((p) => p.id === metadata.id);
           if (!creator || !creator.isCreator) {
-            ws.send(JSON.stringify(errorResponse('CREATOR_ONLY_DRAW_MODE')));
+            ws.send(JSON.stringify(errorResponse("CREATOR_ONLY_DRAW_MODE")));
             return;
           }
           if (lobby.game.started) {
-            ws.send(JSON.stringify(errorResponse('GAME_ALREADY_STARTED')));
+            ws.send(JSON.stringify(errorResponse("GAME_ALREADY_STARTED")));
             return;
           }
-          lobby.game.drawMode = message.mode === 'direct' ? 'direct' : 'chain';
+          lobby.game.drawMode = message.mode === "direct" ? "direct" : "chain";
           broadcastPlayers(metadata.lobbyId!);
           return;
         }
 
-        case 'ready': {
+        case "ready": {
           const lobby = lobbies.get(metadata.lobbyId!);
           if (!lobby) {
-            ws.send(JSON.stringify(errorResponse('NOT_IN_LOBBY')));
+            ws.send(JSON.stringify(errorResponse("NOT_IN_LOBBY")));
             return;
           }
-          let player = lobby.players.find(p => p.id === metadata.id);
+          let player = lobby.players.find((p) => p.id === metadata.id);
           if (!player) {
-            player = { id: metadata.id, name: metadata.name || 'Player', ready: false, isCreator: lobby.players.length === 0 };
+            player = {
+              id: metadata.id,
+              name: metadata.name || "Player",
+              ready: false,
+              isCreator: lobby.players.length === 0,
+            };
             lobby.players.push(player);
           }
           const oldReady = player.ready;
           player.ready = !player.ready;
-          serverLog(`ready TOGGLE player=${player.name} ${oldReady}>>${player.ready} lobbyId=${metadata.lobbyId?.slice(0, 8)} playerId=${metadata.id?.slice(0, 8)}`);
-          logState('ready', metadata, { player: player.name, ready: player.ready, allPlayers: lobby.players.map(p => ({ name: p.name, ready: p.ready, disconnected: p.disconnected })) });
-          sessions.set(player.id, { ...sessions.get(player.id)!, pendingReady: player.ready });
+          serverLog(
+            `ready TOGGLE player=${player.name} ${oldReady}>>${player.ready} lobbyId=${metadata.lobbyId?.slice(0, 8)} playerId=${metadata.id?.slice(0, 8)}`,
+          );
+          logState("ready", metadata, {
+            player: player.name,
+            ready: player.ready,
+            allPlayers: lobby.players.map((p) => ({
+              name: p.name,
+              ready: p.ready,
+              disconnected: p.disconnected,
+            })),
+          });
+          sessions.set(player.id, {
+            ...sessions.get(player.id)!,
+            pendingReady: player.ready,
+          });
           broadcastPlayers(metadata.lobbyId!);
           checkStartGame(metadata.lobbyId!);
           return;
         }
 
-        case 'reconnect': {
+        case "reconnect": {
           const session = sessions.get(message.playerId!);
-          logState('reconnect', metadata, { session: !!session, playerId: message.playerId?.slice(0, 8) });
+          logState("reconnect", metadata, {
+            session: !!session,
+            playerId: message.playerId?.slice(0, 8),
+          });
           if (!session) {
             const newId = uuidv4();
             metadata.id = newId;
-            ws.send(JSON.stringify({ action: 'init', id: newId, dev: isDev(), reconnectLost: true }));
+            ws.send(
+              JSON.stringify({
+                action: "init",
+                id: newId,
+                dev: isDev(),
+                reconnectLost: true,
+              }),
+            );
             return;
           }
           const rLobby = lobbies.get(session.lobbyId);
           const lobbyAlive = rLobby && rLobby.players.length > 0;
-          logState('reconnect_lobby', metadata, { alive: lobbyAlive, started: rLobby?.game?.started, players: rLobby?.players?.length });
+          logState("reconnect_lobby", metadata, {
+            alive: lobbyAlive,
+            started: rLobby?.game?.started,
+            players: rLobby?.players?.length,
+          });
           if (!lobbyAlive) {
             const newId = uuidv4();
             metadata.id = newId;
-            serverLog(`reconnect lobby dead, new session newId=${newId.slice(0, 8)}`);
-            ws.send(JSON.stringify({ action: 'init', id: newId, dev: isDev(), reconnectLost: true }));
+            serverLog(
+              `reconnect lobby dead, new session newId=${newId.slice(0, 8)}`,
+            );
+            ws.send(
+              JSON.stringify({
+                action: "init",
+                id: newId,
+                dev: isDev(),
+                reconnectLost: true,
+              }),
+            );
             return;
           }
-          const existingPlayer = rLobby!.players.find(p => p.id === message.playerId);
-          serverLog(`reconnect existingPlayer=${!!existingPlayer} disconnected=${existingPlayer?.disconnected} ready=${existingPlayer?.ready}`);
+          const existingPlayer = rLobby!.players.find(
+            (p) => p.id === message.playerId,
+          );
+          serverLog(
+            `reconnect existingPlayer=${!!existingPlayer} disconnected=${existingPlayer?.disconnected} ready=${existingPlayer?.ready}`,
+          );
           if (!existingPlayer) {
             const newId = uuidv4();
             metadata.id = newId;
-            ws.send(JSON.stringify({ action: 'init', id: newId, dev: isDev(), reconnectLost: true }));
+            ws.send(
+              JSON.stringify({
+                action: "init",
+                id: newId,
+                dev: isDev(),
+                reconnectLost: true,
+              }),
+            );
             return;
           }
           metadata.name = session.name;
           metadata.lobbyId = session.lobbyId;
           metadata.id = message.playerId!;
-          ws.send(JSON.stringify({ action: 'init', id: message.playerId, dev: isDev() }));
+          ws.send(
+            JSON.stringify({
+              action: "init",
+              id: message.playerId,
+              dev: isDev(),
+            }),
+          );
           const oldTimer = disconnectTimers.get(existingPlayer.id);
           if (oldTimer) clearTimeout(oldTimer);
           disconnectTimers.delete(existingPlayer.id);
@@ -1505,13 +1823,20 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           }
           const deferKey = existingPlayer.id;
           const deferTimer = deferTimers.get(deferKey);
-          if (deferTimer) { clearTimeout(deferTimer); deferTimers.delete(deferKey); }
+          if (deferTimer) {
+            clearTimeout(deferTimer);
+            deferTimers.delete(deferKey);
+          }
           const pending = sessions.get(existingPlayer.id);
           if (pending && pending.pendingReady !== undefined) {
             existingPlayer.ready = pending.pendingReady;
-            serverLog(`reconnect restored ready=${existingPlayer.ready} for ${existingPlayer.name}`);
+            serverLog(
+              `reconnect restored ready=${existingPlayer.ready} for ${existingPlayer.name}`,
+            );
           } else {
-            serverLog(`reconnect NO pendingReady for ${existingPlayer.name}, current ready=${existingPlayer.ready}`);
+            serverLog(
+              `reconnect NO pendingReady for ${existingPlayer.name}, current ready=${existingPlayer.ready}`,
+            );
           }
           for (const [existingWs, existingMeta] of clients) {
             if (existingMeta.id === message.playerId && existingWs !== ws) {
@@ -1523,95 +1848,117 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             broadcastGameUpdate(session.lobbyId);
             const player = existingPlayer || rLobby!.players[0];
             if (player && player.hand) {
-              ws.send(JSON.stringify({
-                action: 'start',
-                id: message.playerId,
-                players: sanitizePlayersForClient(rLobby!.players),
-                discardPile: rLobby!.game.discardPile,
-                turn: rLobby!.game.turn,
-                direction: rLobby!.game.direction,
-                gameState: rLobby!.game.state,
-                drawingCount: rLobby!.game.drawingCount,
-                hand: player.hand,
-                turnDeadline: getTurnDeadline(session.lobbyId),
-                turnTimerPaused: isTurnTimerPaused(session.lobbyId),
-              }));
+              ws.send(
+                JSON.stringify({
+                  action: "start",
+                  id: message.playerId,
+                  players: sanitizePlayersForClient(rLobby!.players),
+                  discardPile: rLobby!.game.discardPile,
+                  turn: rLobby!.game.turn,
+                  direction: rLobby!.game.direction,
+                  gameState: rLobby!.game.state,
+                  drawingCount: rLobby!.game.drawingCount,
+                  hand: player.hand,
+                  turnDeadline: getTurnDeadline(session.lobbyId),
+                  turnTimerPaused: isTurnTimerPaused(session.lobbyId),
+                }),
+              );
             }
           } else {
-            ws.send(JSON.stringify({
-              action: 'players',
-              players: rLobby!.players,
-              turn: rLobby!.game.turn,
-              lobbyId: session.lobbyId
-            }));
+            ws.send(
+              JSON.stringify({
+                action: "players",
+                players: rLobby!.players,
+                turn: rLobby!.game.turn,
+                lobbyId: session.lobbyId,
+              }),
+            );
           }
           return;
         }
 
-        case 'play':
-          if (!lobbies.has(metadata.lobbyId || '')) {
-            ws.send(JSON.stringify(errorResponse('LOBBY_NOT_FOUND'))); return;
+        case "play":
+          if (!lobbies.has(metadata.lobbyId || "")) {
+            ws.send(JSON.stringify(errorResponse("LOBBY_NOT_FOUND")));
+            return;
           }
           handlePlay(metadata.lobbyId!, metadata.id, message.card!);
           return;
 
-        case 'draw':
-          if (!lobbies.has(metadata.lobbyId || '')) {
-            ws.send(JSON.stringify(errorResponse('LOBBY_NOT_FOUND'))); return;
+        case "draw":
+          if (!lobbies.has(metadata.lobbyId || "")) {
+            ws.send(JSON.stringify(errorResponse("LOBBY_NOT_FOUND")));
+            return;
           }
           handleDraw(metadata.lobbyId!, metadata.id);
           return;
 
-        case 'uno':
-          if (!lobbies.has(metadata.lobbyId || '')) {
-            ws.send(JSON.stringify(errorResponse('LOBBY_NOT_FOUND'))); return;
+        case "uno":
+          if (!lobbies.has(metadata.lobbyId || "")) {
+            ws.send(JSON.stringify(errorResponse("LOBBY_NOT_FOUND")));
+            return;
           }
           handleUno(metadata.lobbyId!, metadata.id);
           return;
 
-        case 'play_multiple':
-          if (!lobbies.has(metadata.lobbyId || '')) {
-            ws.send(JSON.stringify(errorResponse('LOBBY_NOT_FOUND'))); return;
+        case "play_multiple":
+          if (!lobbies.has(metadata.lobbyId || "")) {
+            ws.send(JSON.stringify(errorResponse("LOBBY_NOT_FOUND")));
+            return;
           }
           handlePlayMultiple(metadata.lobbyId!, metadata.id, message.cards!);
           return;
 
-        case 'leave':
+        case "leave":
           if (metadata.isSpectator) {
             metadata.lobbyId = null;
             metadata.isSpectator = false;
-            ws.send(JSON.stringify({ action: 'surrendered' }));
+            ws.send(JSON.stringify({ action: "surrendered" }));
             return;
           }
-          if (!lobbies.has(metadata.lobbyId || '')) {
-            ws.send(JSON.stringify(errorResponse('LOBBY_NOT_FOUND'))); return;
+          if (!lobbies.has(metadata.lobbyId || "")) {
+            ws.send(JSON.stringify(errorResponse("LOBBY_NOT_FOUND")));
+            return;
           }
           handleLeave(metadata.lobbyId!, metadata.id);
           sessions.delete(metadata.id);
           metadata.lobbyId = null;
           return;
 
-        case 'surrender': {
-          const sLobby = lobbies.get(metadata.lobbyId || '');
+        case "surrender": {
+          const sLobby = lobbies.get(metadata.lobbyId || "");
           if (!sLobby || !sLobby.game.started) return;
-          const surrenderPlayer = sLobby.players.find(p => p.id === metadata.id);
+          const surrenderPlayer = sLobby.players.find(
+            (p) => p.id === metadata.id,
+          );
           if (!surrenderPlayer) return;
 
-          const remaining = sLobby.players.filter(p => p.id !== metadata.id);
-          const realRemaining = remaining.filter(p => !p.isAI);
+          const remaining = sLobby.players.filter((p) => p.id !== metadata.id);
+          const realRemaining = remaining.filter((p) => !p.isAI);
           // No human players left → nobody won
           if (realRemaining.length === 0) {
             const lobbyId = metadata.lobbyId!;
-            if (surrenderPlayer.hand) sLobby.game.discardPile.push(...surrenderPlayer.hand);
+            if (surrenderPlayer.hand)
+              sLobby.game.discardPile.push(...surrenderPlayer.hand);
             const idx = sLobby.players.indexOf(surrenderPlayer);
             sLobby.players.splice(idx, 1);
             metadata.lobbyId = null;
             sessions.delete(surrenderPlayer.id);
-            ws.send(JSON.stringify({ action: 'win', winner: '' }));
-            broadcastToLobby(lobbyId, { action: 'win', winner: '' });
-            for (const [, m] of clients) m.lobbyId === lobbyId && (m.lobbyId = null);
+            ws.send(JSON.stringify({ action: "win", winner: "" }));
+            broadcastToLobby(lobbyId, { action: "win", winner: "" });
+            for (const [, m] of clients)
+              m.lobbyId === lobbyId && (m.lobbyId = null);
             sLobby.players = [];
-            sLobby.game = { deck: [], discardPile: [], turn: 0, direction: 1, started: false, state: LobbyGameState.normal, drawingCount: 0, drawMode: 'chain' };
+            sLobby.game = {
+              deck: [],
+              discardPile: [],
+              turn: 0,
+              direction: 1,
+              started: false,
+              state: LobbyGameState.normal,
+              drawingCount: 0,
+              drawMode: "chain",
+            };
             startedLobbies.delete(lobbyId);
             clearAllAITimeouts(lobbyId);
             resetTurnTimerState(lobbyId);
@@ -1625,48 +1972,54 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           }
 
           // >2 players: offer spectate
-          ws.send(JSON.stringify({ action: 'surrender_offer' }));
+          ws.send(JSON.stringify({ action: "surrender_offer" }));
           return;
         }
 
-        case 'spectate_accept': {
+        case "spectate_accept": {
           const lobby = lobbies.get(metadata.lobbyId!);
           if (!lobby || !lobby.game.started) return;
-          const player = lobby.players.find(p => p.id === metadata.id);
+          const player = lobby.players.find((p) => p.id === metadata.id);
           if (!player) return;
           if (player.hand) lobby.game.discardPile.push(...player.hand);
           const idx = lobby.players.indexOf(player);
           if (idx === lobby.game.turn) {
-            lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+            lobby.game.turn =
+              (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+              lobby.players.length;
           }
           lobby.players.splice(idx, 1);
           if (idx < lobby.game.turn && lobby.players.length > 0) {
-            lobby.game.turn = (lobby.game.turn - 1 + lobby.players.length) % lobby.players.length;
+            lobby.game.turn =
+              (lobby.game.turn - 1 + lobby.players.length) %
+              lobby.players.length;
           }
           sessions.delete(metadata.id);
           metadata.isSpectator = true;
-          ws.send(JSON.stringify({
-            action: 'start',
-            id: metadata.id,
-            players: sanitizePlayersForClient(lobby.players),
-            discardPile: lobby.game.discardPile,
-            turn: lobby.game.turn,
-            direction: lobby.game.direction,
-            hand: [],
-            spectator: true
-          }));
+          ws.send(
+            JSON.stringify({
+              action: "start",
+              id: metadata.id,
+              players: sanitizePlayersForClient(lobby.players),
+              discardPile: lobby.game.discardPile,
+              turn: lobby.game.turn,
+              direction: lobby.game.direction,
+              hand: [],
+              spectator: true,
+            }),
+          );
           checkGameAborted(metadata.lobbyId!, metadata.id);
           broadcastGameUpdate(metadata.lobbyId!);
           return;
         }
 
-        case 'spectate': {
+        case "spectate": {
           if (!isValidLobbyId(message.lobbyId)) {
-            ws.send(JSON.stringify(errorResponse('NEED_LOBBY_NAME')));
+            ws.send(JSON.stringify(errorResponse("NEED_LOBBY_NAME")));
             return;
           }
           if (!isValidPlayerName(message.name)) {
-            ws.send(JSON.stringify(errorResponse('INVALID_PLAYER_NAME')));
+            ws.send(JSON.stringify(errorResponse("INVALID_PLAYER_NAME")));
             return;
           }
           // Match join's lobbyId normalization so spectators can always
@@ -1674,82 +2027,95 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           message.lobbyId = normalizeLobbyId(message.lobbyId);
           const lobby = lobbies.get(message.lobbyId!);
           if (!lobby || !lobby.game.started) {
-            ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED')));
+            ws.send(JSON.stringify(errorResponse("GAME_NOT_STARTED")));
             return;
           }
           metadata.name = message.name;
           metadata.lobbyId = message.lobbyId;
           metadata.isSpectator = true;
-          ws.send(JSON.stringify({
-            action: 'start',
-            id: metadata.id,
-            players: sanitizePlayersForClient(lobby.players),
-            discardPile: lobby.game.discardPile,
-            turn: lobby.game.turn,
-            direction: lobby.game.direction,
-            hand: [],
-            spectator: true
-          }));
+          ws.send(
+            JSON.stringify({
+              action: "start",
+              id: metadata.id,
+              players: sanitizePlayersForClient(lobby.players),
+              discardPile: lobby.game.discardPile,
+              turn: lobby.game.turn,
+              direction: lobby.game.direction,
+              hand: [],
+              spectator: true,
+            }),
+          );
           return;
         }
 
-        case 'reaction':
+        case "reaction":
           const lobby = lobbies.get(metadata.lobbyId!);
           if (!lobby || !lobby.game.started) break;
           // Validate content for both emoji and text the same way: must be a
           // bounded string. The emoji path used to accept arbitrary types and
           // unlimited length, which let a malicious client broadcast an
           // unbounded payload to every player in the room.
-          if (typeof message.content !== 'string' || message.content.length === 0) break;
+          if (
+            typeof message.content !== "string" ||
+            message.content.length === 0
+          )
+            break;
           if (message.content.length > REACTION_CONTENT_MAX) break;
-          if (message.type === 'emoji') {
+          if (message.type === "emoji") {
             broadcastToLobby(metadata.lobbyId!, {
-              action: 'reaction',
+              action: "reaction",
               playerId: metadata.id,
-              type: 'emoji',
-              content: message.content
+              type: "emoji",
+              content: message.content,
             });
-          } else if (message.type === 'text') {
+          } else if (message.type === "text") {
             let width = 0;
             for (const ch of message.content) {
-              if (/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch)) width += 1;
+              if (/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch))
+                width += 1;
               else width += 0.3;
             }
             if (width > 64) break;
             broadcastToLobby(metadata.lobbyId!, {
-              action: 'reaction',
+              action: "reaction",
               playerId: metadata.id,
-              type: 'text',
-              content: message.content
+              type: "text",
+              content: message.content,
             });
           }
           break;
 
         default:
-          serverWarn('unhandled event', message);
+          serverWarn("unhandled event", message);
           return;
       }
     } else {
       if (!isDev()) {
-        serverWarn('cannot handle dev event', message);
+        serverWarn("cannot handle dev event", message);
         return;
       }
 
       switch (message.action) {
-        case 'dev_call_win':
+        case "dev_call_win":
           const lobby1 = findOrCreateLobby(metadata.lobbyId!);
-          const player1 = lobby1.players.find(p => p.id === metadata.id);
+          const player1 = lobby1.players.find((p) => p.id === metadata.id);
           if (!player1) {
-            ws.send(JSON.stringify(errorResponse('PLAYER_NOT_FOUND')));
+            ws.send(JSON.stringify(errorResponse("PLAYER_NOT_FOUND")));
             return;
           }
           broadcastWin(metadata.lobbyId!, player1.name);
           return;
-        case 'dev_add_cards': {
+        case "dev_add_cards": {
           const lobby2 = findOrCreateLobby(metadata.lobbyId!);
-          if (!lobby2.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
-          const player2 = lobby2.players.find(p => p.id === metadata.id);
-          if (!player2) { ws.send(JSON.stringify(errorResponse('PLAYER_NOT_FOUND'))); return; }
+          if (!lobby2.game.started) {
+            ws.send(JSON.stringify(errorResponse("GAME_NOT_STARTED")));
+            return;
+          }
+          const player2 = lobby2.players.find((p) => p.id === metadata.id);
+          if (!player2) {
+            ws.send(JSON.stringify(errorResponse("PLAYER_NOT_FOUND")));
+            return;
+          }
           const count = Math.min(message.count || 1, 20);
           let drawn = lobby2.game.deck.splice(0, count);
           if (drawn.length < count && lobby2.game.discardPile.length >= 2) {
@@ -1764,11 +2130,17 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           broadcastGameUpdate(metadata.lobbyId!);
           return;
         }
-        case 'dev_add_all_cards': {
+        case "dev_add_all_cards": {
           const lobby2 = findOrCreateLobby(metadata.lobbyId!);
-          if (!lobby2.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
-          const player2 = lobby2.players.find(p => p.id === metadata.id);
-          if (!player2) { ws.send(JSON.stringify(errorResponse('PLAYER_NOT_FOUND'))); return; }
+          if (!lobby2.game.started) {
+            ws.send(JSON.stringify(errorResponse("GAME_NOT_STARTED")));
+            return;
+          }
+          const player2 = lobby2.players.find((p) => p.id === metadata.id);
+          if (!player2) {
+            ws.send(JSON.stringify(errorResponse("PLAYER_NOT_FOUND")));
+            return;
+          }
           let drawn = lobby2.game.deck.splice(0, lobby2.game.deck.length);
           if (drawn.length === 0 && lobby2.game.discardPile.length >= 2) {
             const topCard = lobby2.game.discardPile.pop()!;
@@ -1781,12 +2153,21 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           broadcastGameUpdate(metadata.lobbyId!);
           return;
         }
-        case 'dev_remove_cards': {
+        case "dev_remove_cards": {
           const lobby3 = findOrCreateLobby(metadata.lobbyId!);
-          if (!lobby3.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
-          const player3 = lobby3.players.find(p => p.id === metadata.id);
-          if (!player3) { ws.send(JSON.stringify(errorResponse('PLAYER_NOT_FOUND'))); return; }
-          const removeCount = Math.min(message.count || 1, player3.hand!.length);
+          if (!lobby3.game.started) {
+            ws.send(JSON.stringify(errorResponse("GAME_NOT_STARTED")));
+            return;
+          }
+          const player3 = lobby3.players.find((p) => p.id === metadata.id);
+          if (!player3) {
+            ws.send(JSON.stringify(errorResponse("PLAYER_NOT_FOUND")));
+            return;
+          }
+          const removeCount = Math.min(
+            message.count || 1,
+            player3.hand!.length,
+          );
           player3.hand!.splice(0, removeCount);
           if (player3.hand!.length === 0) {
             broadcastWin(metadata.lobbyId!, player3.name);
@@ -1795,44 +2176,61 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           }
           return;
         }
-        case 'dev_skip': {
+        case "dev_skip": {
           const lobby4 = findOrCreateLobby(metadata.lobbyId!);
-          if (!lobby4.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
-          lobby4.game.turn = (lobby4.game.turn + lobby4.game.direction + lobby4.players.length) % lobby4.players.length;
+          if (!lobby4.game.started) {
+            ws.send(JSON.stringify(errorResponse("GAME_NOT_STARTED")));
+            return;
+          }
+          lobby4.game.turn =
+            (lobby4.game.turn + lobby4.game.direction + lobby4.players.length) %
+            lobby4.players.length;
           broadcastGameUpdate(metadata.lobbyId!);
           return;
         }
-        case 'dev_give_card': {
+        case "dev_give_card": {
           // Inject a specific card into the caller's hand. Used by tests that
           // need to stage a particular game state (e.g. force a draw2 to be
           // playable). Production deployments don't expose dev_* events.
           const lobby = findOrCreateLobby(metadata.lobbyId!);
-          if (!lobby.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
-          const player = lobby.players.find(p => p.id === metadata.id);
-          if (!player) { ws.send(JSON.stringify(errorResponse('PLAYER_NOT_FOUND'))); return; }
-          if (!message.card || typeof message.card.type !== 'string') return;
+          if (!lobby.game.started) {
+            ws.send(JSON.stringify(errorResponse("GAME_NOT_STARTED")));
+            return;
+          }
+          const player = lobby.players.find((p) => p.id === metadata.id);
+          if (!player) {
+            ws.send(JSON.stringify(errorResponse("PLAYER_NOT_FOUND")));
+            return;
+          }
+          if (!message.card || typeof message.card.type !== "string") return;
           player.hand!.push({ ...message.card });
           broadcastGameUpdate(metadata.lobbyId!);
           return;
         }
-        case 'dev_set_top': {
+        case "dev_set_top": {
           // Stage the discard pile with a specific top card so tests/dev can
           // exercise edge cases (e.g. broken-chain tests). The card is pushed
           // on top; the server treats the latest discard as authoritative for
           // matching, so this is sufficient. No turn change.
           const lobby = findOrCreateLobby(metadata.lobbyId!);
-          if (!lobby.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
-          if (!message.card || typeof message.card.type !== 'string') return;
+          if (!lobby.game.started) {
+            ws.send(JSON.stringify(errorResponse("GAME_NOT_STARTED")));
+            return;
+          }
+          if (!message.card || typeof message.card.type !== "string") return;
           lobby.game.discardPile.push({ ...message.card });
           broadcastGameUpdate(metadata.lobbyId!);
           return;
         }
-        case 'dev_set_chain': {
+        case "dev_set_chain": {
           // Force the lobby into chain-drawing state with a given pending
           // penalty. Lets tests assert what happens when a player breaks an
           // existing chain.
           const lobby = findOrCreateLobby(metadata.lobbyId!);
-          if (!lobby.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
+          if (!lobby.game.started) {
+            ws.send(JSON.stringify(errorResponse("GAME_NOT_STARTED")));
+            return;
+          }
           const count = Math.max(0, Math.min(message.count || 0, 1000));
           if (count > 0) {
             lobby.game.state = LobbyGameState.drawing;
@@ -1844,21 +2242,29 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           broadcastGameUpdate(metadata.lobbyId!);
           return;
         }
-        case 'dev_clear_hand': {
+        case "dev_clear_hand": {
           const lobby = findOrCreateLobby(metadata.lobbyId!);
-          if (!lobby.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
-          const player = lobby.players.find(p => p.id === metadata.id);
-          if (!player) { ws.send(JSON.stringify(errorResponse('PLAYER_NOT_FOUND'))); return; }
+          if (!lobby.game.started) {
+            ws.send(JSON.stringify(errorResponse("GAME_NOT_STARTED")));
+            return;
+          }
+          const player = lobby.players.find((p) => p.id === metadata.id);
+          if (!player) {
+            ws.send(JSON.stringify(errorResponse("PLAYER_NOT_FOUND")));
+            return;
+          }
           player.hand = [];
           broadcastGameUpdate(metadata.lobbyId!);
           return;
         }
-        case 'dev_export_state': {
-          logState('export', metadata);
-          ws.send(JSON.stringify({ action: 'dev_state_export', log: stateLog }));
+        case "dev_export_state": {
+          logState("export", metadata);
+          ws.send(
+            JSON.stringify({ action: "dev_state_export", log: stateLog }),
+          );
           return;
         }
-        case 'dev_toggle_turn_timer': {
+        case "dev_toggle_turn_timer": {
           // Toggle pause/resume the active turn timer for this lobby.
           // Pausing freezes the deadline so the player isn't auto-drawn
           // while we're poking at game state during dev / debugging;
@@ -1866,8 +2272,14 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           // was remaining at pause. Production builds disable the dev_*
           // dispatcher entirely, so this can never run in prod.
           const lobby = lobbies.get(metadata.lobbyId!);
-          if (!lobby) { ws.send(JSON.stringify(errorResponse('NOT_IN_LOBBY'))); return; }
-          if (!lobby.game.started) { ws.send(JSON.stringify(errorResponse('GAME_NOT_STARTED'))); return; }
+          if (!lobby) {
+            ws.send(JSON.stringify(errorResponse("NOT_IN_LOBBY")));
+            return;
+          }
+          if (!lobby.game.started) {
+            ws.send(JSON.stringify(errorResponse("GAME_NOT_STARTED")));
+            return;
+          }
           const t = turnTimers.get(metadata.lobbyId!);
           if (!t) {
             // Nothing to pause — likely an AI turn or no active timer.
@@ -1890,7 +2302,9 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             t.deadline = Date.now() + remaining;
             t.paused = false;
             t.remainingMs = undefined;
-            serverLog(`dev_toggle_turn_timer RESUME lobby=${lobbyId.slice(0, 8)} remaining=${remaining}ms`);
+            serverLog(
+              `dev_toggle_turn_timer RESUME lobby=${lobbyId.slice(0, 8)} remaining=${remaining}ms`,
+            );
           } else {
             // Pause: clear the timer + remember remaining time.
             const remaining = Math.max(0, t.deadline - Date.now());
@@ -1901,7 +2315,9 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
             const newToken = (turnTokens.get(metadata.lobbyId!) || 0) + 1;
             turnTokens.set(metadata.lobbyId!, newToken);
             t.token = newToken;
-            serverLog(`dev_toggle_turn_timer PAUSE lobby=${metadata.lobbyId!.slice(0, 8)} remaining=${remaining}ms`);
+            serverLog(
+              `dev_toggle_turn_timer PAUSE lobby=${metadata.lobbyId!.slice(0, 8)} remaining=${remaining}ms`,
+            );
           }
           // Broadcast updated turn state so all clients reflect the
           // pause/resume in their countdown UIs.
@@ -1909,16 +2325,18 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
           return;
         }
         default:
-          serverWarn('unhandled dev event', message);
+          serverWarn("unhandled dev event", message);
       }
     }
   });
 
-  ws.on('close', () => {
+  ws.on("close", () => {
     const metadata = clients.get(ws);
-    logState('close', metadata);
+    logState("close", metadata);
     if (metadata && metadata.lobbyId) {
-      const player = lobbies.get(metadata.lobbyId)?.players.find(p => p.id === metadata.id);
+      const player = lobbies
+        .get(metadata.lobbyId)
+        ?.players.find((p) => p.id === metadata.id);
       if (player) player.disconnected = true;
       scheduleProcessClose(metadata.id, ws, metadata);
     }
@@ -1926,7 +2344,11 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
   });
 });
 
-function scheduleProcessClose(playerId: string, ws: WebSocket, metadata: ClientMetadata): void {
+function scheduleProcessClose(
+  playerId: string,
+  ws: WebSocket,
+  metadata: ClientMetadata,
+): void {
   const deferKey = playerId || (metadata && metadata.lobbyId!);
   if (!deferKey) return processClose(ws, metadata);
   const existing = deferTimers.get(deferKey);
@@ -1941,7 +2363,7 @@ function scheduleProcessClose(playerId: string, ws: WebSocket, metadata: ClientM
 function processClose(_ws: WebSocket, metadata: ClientMetadata): void {
   const lobby = lobbies.get(metadata.lobbyId!);
   if (!lobby) return;
-  const player = lobby.players.find(p => p.id === metadata.id);
+  const player = lobby.players.find((p) => p.id === metadata.id);
   if (!player) return;
   player.disconnected = true;
   player.reconnectDeadline = Date.now() + RECONNECT_DEADLINE_MS;
@@ -1959,7 +2381,7 @@ function processClose(_ws: WebSocket, metadata: ClientMetadata): void {
   // normal disconnect window because nobody else needs to reconnect —
   // either the same human refreshes back in, or the game is over.
   if (lobby.game.started) {
-    const realActive = lobby.players.filter(p => !p.isAI && !p.disconnected);
+    const realActive = lobby.players.filter((p) => !p.isAI && !p.disconnected);
     if (realActive.length === 0) {
       // Window: long enough for a page refresh to complete the WS
       // handshake and `reconnect` send (~1-2s usual), short enough
@@ -1973,10 +2395,12 @@ function processClose(_ws: WebSocket, metadata: ClientMetadata): void {
         // Re-check: maybe somebody reconnected in the grace window.
         const lobbyNow = lobbies.get(lobbyId);
         if (!lobbyNow || !lobbyNow.game.started) return;
-        const stillNoHumans = lobbyNow.players.filter(p => !p.isAI && !p.disconnected).length === 0;
+        const stillNoHumans =
+          lobbyNow.players.filter((p) => !p.isAI && !p.disconnected).length ===
+          0;
         if (stillNoHumans) {
           serverLog(`all-humans-gone abort fires in ${lobbyId.slice(0, 8)}`);
-          broadcastGameAborted(lobbyId, '');
+          broadcastGameAborted(lobbyId, "");
         }
       }, ALL_HUMANS_GONE_GRACE_MS);
       allHumansGoneTimers.set(lobbyId, abortTimer);
@@ -1986,15 +2410,19 @@ function processClose(_ws: WebSocket, metadata: ClientMetadata): void {
   const reconnectTimer = setTimeout(() => {
     reconnectTimers.delete(player.id);
     if (!player.disconnected) return;
-    if (lobby.game.started &&
-      lobby.game.turn === lobby.players.indexOf(player)) {
-      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+    if (
+      lobby.game.started &&
+      lobby.game.turn === lobby.players.indexOf(player)
+    ) {
+      lobby.game.turn =
+        (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+        lobby.players.length;
       broadcastGameUpdate(metadata.lobbyId!);
     }
     const oldTimer = disconnectTimers.get(player.id);
     if (oldTimer) clearTimeout(oldTimer);
     disconnectTimers.delete(player.id);
-    const idx = lobby.players.findIndex(p => p.id === player.id);
+    const idx = lobby.players.findIndex((p) => p.id === player.id);
     if (idx > -1) {
       const removed = lobby.players.splice(idx, 1)[0];
       if (removed.isCreator && lobby.players.length > 0) {
@@ -2009,12 +2437,12 @@ function processClose(_ws: WebSocket, metadata: ClientMetadata): void {
   reconnectTimers.set(player.id, reconnectTimer);
   const timer = setTimeout(() => {
     disconnectTimers.delete(player.id);
-    const idx = lobby.players.findIndex(p => p.id === player.id);
+    const idx = lobby.players.findIndex((p) => p.id === player.id);
     if (idx > -1 && lobby.players[idx].disconnected) {
       const removed = lobby.players.splice(idx, 1)[0];
       if (removed.isCreator && !lobby.game.started) {
-        const removedAIs = lobby.players.filter(p => p.isAI);
-        lobby.players = lobby.players.filter(p => !p.isAI);
+        const removedAIs = lobby.players.filter((p) => p.isAI);
+        lobby.players = lobby.players.filter((p) => !p.isAI);
         for (const ai of removedAIs) clearAITimeout(ai.id);
         if (lobby.players.length > 0) lobby.players[0].isCreator = true;
       }
@@ -2034,7 +2462,7 @@ function handleLeave(lobbyId: string, playerId: string): void {
   const lobby = lobbies.get(lobbyId);
   if (!lobby) return;
 
-  const playerIndex = lobby.players.findIndex(p => p.id === playerId);
+  const playerIndex = lobby.players.findIndex((p) => p.id === playerId);
   if (playerIndex > -1) {
     const player = lobby.players[playerIndex];
     // If game started, put hand cards on discard pile
@@ -2043,17 +2471,20 @@ function handleLeave(lobbyId: string, playerId: string): void {
     }
     // If it was this player's turn, advance
     if (playerIndex === lobby.game.turn) {
-      lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+      lobby.game.turn =
+        (lobby.game.turn + lobby.game.direction + lobby.players.length) %
+        lobby.players.length;
     }
     lobby.players.splice(playerIndex, 1);
     // Adjust turn if removed before current
     if (playerIndex < lobby.game.turn && lobby.players.length > 0) {
-      lobby.game.turn = (lobby.game.turn - 1 + lobby.players.length) % lobby.players.length;
+      lobby.game.turn =
+        (lobby.game.turn - 1 + lobby.players.length) % lobby.players.length;
     }
 
     if (player.isCreator && !lobby.game.started) {
-      const removedAIs = lobby.players.filter(p => p.isAI);
-      lobby.players = lobby.players.filter(p => !p.isAI);
+      const removedAIs = lobby.players.filter((p) => p.isAI);
+      lobby.players = lobby.players.filter((p) => !p.isAI);
       for (const ai of removedAIs) clearAITimeout(ai.id);
       if (lobby.players.length > 0) {
         lobby.players[0].isCreator = true;
@@ -2070,14 +2501,20 @@ function handleLeave(lobbyId: string, playerId: string): void {
       scheduleTurnTimeout(lobbyId);
     }
 
-    broadcastToLobby(lobbyId, {
-      action: 'players',
-      players: lobby.players,
-      turn: lobby.game.turn,
-      lobbyId: lobbyId,
-      turnDeadline: lobby.game.started ? getTurnDeadline(lobbyId) : null,
-      turnTimerPaused: lobby.game.started ? isTurnTimerPaused(lobbyId) : false,
-    }, playerId);
+    broadcastToLobby(
+      lobbyId,
+      {
+        action: "players",
+        players: lobby.players,
+        turn: lobby.game.turn,
+        lobbyId: lobbyId,
+        turnDeadline: lobby.game.started ? getTurnDeadline(lobbyId) : null,
+        turnTimerPaused: lobby.game.started
+          ? isTurnTimerPaused(lobbyId)
+          : false,
+      },
+      playerId,
+    );
 
     checkStartGame(lobbyId);
     serverLog(`player leaved from ${lobby.id} :`, player);
@@ -2090,15 +2527,17 @@ function handleLeave(lobbyId: string, playerId: string): void {
 }
 
 function hasFlagExitImmediately(): boolean {
-  return process.argv.includes('--exit-immediately') || process.argv.includes('-e');
+  return (
+    process.argv.includes("--exit-immediately") || process.argv.includes("-e")
+  );
 }
 
 function isDev(): boolean {
-  return process.env.NODE_ENV === 'development';
+  return process.env.NODE_ENV === "development";
 }
 
 function getPort(): number {
-  const idx = process.argv.indexOf('--port');
+  const idx = process.argv.indexOf("--port");
   if (idx !== -1 && process.argv[idx + 1]) {
     const port = parseInt(process.argv[idx + 1], 10);
     if (port > 0 && port < 65536) return port;
@@ -2112,16 +2551,16 @@ console.log(`UNO Server v${VERSION}`);
 console.log(`Copyright (C) 2026 miruku (lovemilk)`);
 console.log();
 
-process.on('SIGINT', () => {
-  process.stdout.write('\nServer closed');
+process.on("SIGINT", () => {
+  process.stdout.write("\nServer closed");
   if (!!process.stdin && !hasFlagExitImmediately() && !isDev()) {
-    console.log(', press any key to close this window...');
+    console.log(", press any key to close this window...");
     try {
       process.stdin.setRawMode(true);
       process.stdin.resume();
-      process.stdin.on('data', () => process.exit(0));
+      process.stdin.on("data", () => process.exit(0));
     } catch (e) {
-      console.warn('cannot wait for any key');
+      console.warn("cannot wait for any key");
       console.error(e);
       process.exit(0);
     }
@@ -2131,6 +2570,11 @@ process.on('SIGINT', () => {
   }
 });
 
-httpServer.on('listening', () => serverLog(`Server started on port http://0.0.0.0:${PORT}\n`));
-httpServer.on('error', (e: Error) => { console.error(e); process.emit('SIGINT'); });
+httpServer.on("listening", () =>
+  serverLog(`Server started on port http://0.0.0.0:${PORT}\n`),
+);
+httpServer.on("error", (e: Error) => {
+  console.error(e);
+  process.emit("SIGINT");
+});
 httpServer.listen(PORT);
