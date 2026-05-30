@@ -872,68 +872,79 @@ body.spectator #turn-indicator::after {
 
 /* ───── Collapsed sticky header (scrolled-down docked state) ─────
    When body.header-collapsed is set (driven by evalStickyHeaderCollapse
-   in client.ts on scroll), the turn-indicator and the player-tiles row
-   pin to the top and merge into a single full-viewport-width card:
-     • the turn-indicator shows only a thin green/red color bar
-       (loading-bar look — green on our turn, red/orange otherwise)
-     • the player order/card-count tiles dock flush beneath it, sharing
-       one continuous card background
-     • the verbose "YOU / X的回合" label is hidden; only the countdown
-       stays, docked into the dark tiles area's top-left corner.
+   in client.ts on scroll), the player-tiles row docks at the top of the
+   viewport and grows a thin colored top bar so the whole thing reads as
+   one card:
+     • a thin green/red strip across the top of the tiles card
+       (loading-bar look — green on our turn, red/orange otherwise),
+       drawn by #opponent-hands::before so it's part of the SAME sticky
+       element — no second sticky box that could pin at a different
+       scroll point and leave a gap / overgrown bar.
+     • the verbose turn-indicator (the big "YOU / X的回合" pill) is fully
+       hidden; only the countdown badge stays, docked into the strip.
 
-   CRITICAL: the collapse must NOT change document height, or the browser
-   would clamp/re-anchor scrollY when the user is near the bottom (which
-   caused a jump-to-top + a collapse/expand flicker loop). So instead of
-   shrinking the turn-indicator's box, we keep its full in-flow height and
-   merely CLIP its paint to a 12px strip via clip-path. The tiles row then
-   pins just under that strip and (with a higher z-index + opaque bg)
-   covers the now-invisible remainder of the indicator box. Net document
-   height is unchanged, so the scroll position stays put.
+   Driving the bar off the tiles' ::before (rather than a separately
+   pinned #turn-indicator) fixes two bugs:
+     1. the color bar no longer grows tall during the scroll range where
+        the indicator had pinned but the tiles had not yet;
+     2. the countdown no longer floats over an overgrown bar mid-scroll.
 
    --vw100 (set from JS) is the true content width, i.e. excludes the
    vertical scrollbar gutter so the full-bleed doesn't spawn a phantom
    horizontal scrollbar. */
-body.header-collapsed #turn-indicator,
+
+/* Hide the big turn-indicator pill entirely while collapsed. Use
+   visibility (not display) so its in-flow height is preserved and the
+   document height — and thus the scroll position — never changes when
+   toggling. */
+body.header-collapsed #turn-indicator {
+    visibility: hidden;
+}
+
+/* The tiles row is the single docked card. Full-bleed to the viewport
+   width, pinned just below the page top, with room at the top for the
+   colored strip drawn by ::before. */
 body.header-collapsed #opponent-hands {
-    /* Full-bleed: re-anchor the centered #game child to the viewport's
-       left edge. Only horizontal margins change — vertical margins (and
-       thus in-flow height) are left untouched on purpose. */
     width: var(--vw100, 100vw);
     margin-left: calc(50% - var(--vw100, 100vw) / 2);
     margin-right: calc(50% - var(--vw100, 100vw) / 2);
     max-width: none;
-}
-
-/* Show only a thin 12px bar of the indicator WITHOUT clipping: keep the
-   box at its full natural height (so document height is unchanged and the
-   scroll position never jumps), and let the opaque tiles card below cover
-   everything except the top 12px strip. We deliberately avoid clip-path
-   here because clip-path also clips position:fixed descendants — that
-   would hide the fixed countdown badge below. The indicator pins at
-   top:8 and the tiles at top:20, so exactly 12px of the indicator's
-   gradient shows as the bar. */
-body.header-collapsed #turn-indicator {
     top: 8px;
-    box-shadow: none;
-    animation: none;
-    transform: none;
+    z-index: 51;
+    border-radius: 16px;
+    background: rgba(20, 20, 20, 0.95);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+    /* Reserve space for the 12px color strip so player tiles don't sit
+       under it. */
+    padding-top: 20px;
 }
 
-/* Hide the wordy label + spectator suffix (the bar's color already says
-   whose turn it is). visibility (not display) so the H3 keeps its box
-   height and the indicator's in-flow height is preserved. */
-body.header-collapsed #turn-label {
-    visibility: hidden;
+/* The color strip: a 12px bar hugging the top of the tiles card. Inherits
+   whose-turn color from the body flags set alongside header-collapsed. */
+body.header-collapsed #opponent-hands::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 12px;
+    border-radius: 16px 16px 0 0;
+    background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
 }
 
-body.header-collapsed.spectator #turn-indicator::after {
-    display: none;
+/* Green strip when it's our turn. */
+body.header-collapsed.my-turn #opponent-hands::before {
+    background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
 }
 
-/* Countdown badge: dock it into the TOP-LEFT of the dark player-tiles
-   area (just below the bar). Fixed positioning tracks the viewport
-   corner; the tiles card pins at top:20, so 32px sits comfortably
-   inside it. Not clipped (the indicator no longer uses clip-path). */
+/* Slate strip while spectating (matches the spectator indicator color). */
+body.header-collapsed.spectator #opponent-hands::before {
+    background: linear-gradient(135deg, #4a5568 0%, #2d3748 100%);
+}
+
+/* Countdown badge: dock it into the top-left of the tiles card, just
+   below the color strip. Fixed positioning tracks the viewport corner;
+   the card pins at top:8 and the strip is 12px tall, so 24px clears it. */
 body.header-collapsed #turn-timer {
     position: fixed;
     top: 32px;
@@ -942,19 +953,6 @@ body.header-collapsed #turn-timer {
     z-index: 60;
     line-height: 1.4;
     font-size: 0.8rem;
-}
-
-/* Tiles dock right under the 12px bar (8 + 12 = 20). A higher z-index
-   than the indicator (50) + an opaque background means the tiles paint
-   over the indicator's lower region, leaving only the top 12px strip
-   visible as the bar — so bar + tiles read as one continuous card.
-   Square top, rounded bottom. */
-body.header-collapsed #opponent-hands {
-    top: 20px;
-    z-index: 51;
-    border-radius: 0 0 16px 16px;
-    background: rgba(20, 20, 20, 0.95);
-    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
 }
 
 .card {

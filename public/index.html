@@ -13,12 +13,11 @@
     <div id="lobby">
         <h2>加入 UNO Game</h2>
         <div>
-            <input type="text" id="name" placeholder="玩家名称" autocomplete="off"
-                   spellcheck="false" autocapitalize="off">
+            <input type="text" id="name" placeholder="玩家名称" autocomplete="off" spellcheck="false" autocapitalize="off">
         </div>
         <div>
-            <input type="text" id="lobby-id" placeholder="大厅名称" autocomplete="off"
-                   spellcheck="false" autocapitalize="off">
+            <input type="text" id="lobby-id" placeholder="大厅名称" autocomplete="off" spellcheck="false"
+                autocapitalize="off">
         </div>
         <button id="join" title="键盘快捷键：Enter">加入 (创建)</button>
         <div id="lobby-info" style="display: none;">
@@ -36,7 +35,7 @@
         </div>
         <ul id="players"></ul>
         <button id="invite-ai" style="display: none;" title="键盘快捷键：I">邀请 AI</button>
-        <button id="ready" style="display: none;" title="键盘快捷键：R">准备</button>
+        <button id="ready" style="display: none;" title="键盘快捷键：Enter 或 R">准备</button>
     </div>
     <div id="game" style="display: none;">
         <div id="turn-indicator">
@@ -49,7 +48,8 @@
              above the discard pile. -->
         <div id="game-status">
             <span id="game-status-mode" class="game-status-pill" data-tooltip="加牌模式（房主在大厅设置）"></span>
-            <span id="game-status-chain" class="game-status-pill chain hidden" data-tooltip="当前累计的链式加牌张数；下一位玩家必须接 +2/+4 或被迫抽牌"></span>
+            <span id="game-status-chain" class="game-status-pill chain hidden"
+                data-tooltip="当前累计的链式加牌张数；下一位玩家必须接 +2/+4 或被迫抽牌"></span>
         </div>
         <div id="center-area">
             <div id="action-buttons">
@@ -165,6 +165,8 @@
             <p style="margin:2px 0;font-size:0.85rem;"><a style="color:#667eea;"
                     href="https://opensource.org/license/bsd-3-clause" target="_blank">BSD 3-Clause License</a></p>
             <p style="margin:2px 0;font-size:0.85rem;color:#a0aec0;">Copyright &copy; 2026 miruku (lovemilk)</p>
+            <p style="margin:2px 0;font-size:0.85rem;"><a style="color:#667eea;"
+                    href="https://aka.lovemilk.top/github/uno-game-zhs" target="_blank">GitHub Repo</a></p>
             <h3 id="about-storage-title" style="color:#667eea;margin:16px 0 6px;font-size:1rem;">存储</h3>
             <button id="about-clear-btn"
                 style="width:100%;padding:10px;border:none;border-radius:10px;background:linear-gradient(135deg,#ff6b6b,#ee5a24);color:#fff;font-size:0.85rem;font-weight:600;cursor:pointer;font-family:inherit;margin-bottom:8px;">清除本地存储状态</button>
@@ -239,11 +241,16 @@
                 秒），超时则系统自动为该玩家抽一张牌并轮到下一位玩家。倒计时显示在回合提示旁。</p>
 
             <h3 style="color:#667eea;margin:20px 0 8px;font-size:1rem;">键盘快捷键</h3>
-            <p style="font-size:0.85rem;color:#a0aec0;"><b>大厅</b>：在名称/大厅 ID 输入框按 Enter 提交加入；<b>R</b> 切换准备；<b>I</b> 邀请 AI（仅房主）。</p>
-            <p style="font-size:0.85rem;color:#a0aec0;"><b>对局</b>：按 1~9（或小键盘 1~9）选中第 1 至第 9 张手牌，按 0（或 Numpad0）选中第 10 张，<b>再按 Enter</b> 或 <b>再次按下相同的数字键</b> 出牌；ESC 或点击空白区域取消选择。每张可用手牌右上角会显示对应的数字角标。</p>
-            <p style="font-size:0.85rem;color:#a0aec0;"><b>D</b> 或 <b>Space</b> 抽牌；<b>S</b> 认输；<b>L</b> 退出观战；<b>T</b> 切换手牌排列方式（扇形/滚动）。</p>
-            <p style="font-size:0.85rem;color:#a0aec0;">出 wild 等黑牌弹出选色器后，可按 1~4 直接选取（红/黄/绿/蓝），或用 ←→ 切换、Enter 确认、ESC 取消。</p>
-            <p style="font-size:0.85rem;color:#a0aec0;"><b>弹窗</b>内可按 Tab / 方向键在「确定 / 取消」之间切换，按 Enter 执行所选按钮，<b>ESC</b> 关闭任意弹窗。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;"><b>大厅</b>：在名称/大厅 ID 输入框按 Enter 提交加入；进入大厅后按 <b>Enter</b> 或
+                <b>R</b> 切换准备（开始游戏）；<b>I</b> 邀请 AI（仅房主）。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;"><b>对局</b>：按 1~9（或小键盘 1~9）选中第 1 至第 9 张手牌，按 0（或 Numpad0）选中第 10
+                张，<b>再按 Enter</b> 或 <b>再次按下相同的数字键</b> 出牌；ESC 或点击空白区域取消选择。每张可用手牌右上角会显示对应的数字角标。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;"><b>D</b> 或 <b>Space</b> 抽牌；<b>S</b> 认输；<b>L</b> 退出观战；<b>T</b>
+                切换手牌排列方式（扇形/滚动）。</p>
+            <p style="font-size:0.85rem;color:#a0aec0;">出 wild 等黑牌弹出选色器后，可按 1~4 直接选取（红/黄/绿/蓝），或用 ←→ 切换、Enter 确认、ESC 取消。
+            </p>
+            <p style="font-size:0.85rem;color:#a0aec0;"><b>弹窗</b>内可按 Tab / 方向键在「确定 / 取消」之间切换，按 Enter 执行所选按钮，<b>ESC</b>
+                关闭任意弹窗。</p>
             <p style="font-size:0.85rem;color:#a0aec0;">任何位置按 <b>?</b> 打开本规则弹窗。</p>
 
             <button id="rules-close-btn"

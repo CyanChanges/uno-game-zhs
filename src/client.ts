@@ -1248,6 +1248,7 @@ function updateTurnIndicator(): void {
   if (currentTurn === -1 || !players.length) {
     setTurnLabelText('等待游戏开始...');
     turnIndicator.classList.remove('my-turn');
+    document.body.classList.remove('my-turn');
     document.body.classList.add('player-action-disabled');
     stopTurnCountdown();
     setTurnTimerText('');
@@ -1262,10 +1263,12 @@ function updateTurnIndicator(): void {
   if (isMyTurn) {
     setTurnLabelText('YOU');
     turnIndicator.classList.add('my-turn');
+    document.body.classList.add('my-turn');
     document.body.classList.remove('player-action-disabled');
   } else {
     setTurnLabelText(`${currentPlayer ? currentPlayer.name : '-'}的回合`);
     turnIndicator.classList.remove('my-turn');
+    document.body.classList.remove('my-turn');
     document.body.classList.add('player-action-disabled');
   }
 
@@ -1374,14 +1377,14 @@ function setViewportWidthVar(): void {
 }
 
 // We decide collapse/expand from a zero-height SENTINEL placed in normal
-// flow just above the sticky turn-indicator — NOT from the indicator's
-// own geometry. That distinction matters: collapsing the header changes
-// the indicator's height and the document height, which (if we measured
-// the indicator itself) could bump the scroll position back across the
-// threshold and cause an infinite collapse/expand flicker right at the
-// trigger point. The sentinel sits ABOVE everything sticky, so its
-// position is unaffected by the collapse and there's exactly one stable
-// crossing point.
+// flow just above the player-tiles row (#opponent-hands) — NOT from the
+// tiles' own geometry. The sentinel sits ABOVE the sticky tiles, so its
+// position is a pure function of scroll and is unaffected by the collapse
+// (which is purely visual and preserves in-flow height). Triggering off
+// the tiles' natural top means the collapse fires exactly when the tiles
+// reach their pinned spot — the bar (drawn on the tiles) and the docked
+// layout appear together, with no in-between range where a tall bar or a
+// floating countdown could show.
 let stickyHeaderSentinel: HTMLDivElement | null = null;
 
 function ensureStickyHeaderSentinel(): HTMLDivElement {
@@ -1389,9 +1392,12 @@ function ensureStickyHeaderSentinel(): HTMLDivElement {
   const s = document.createElement('div');
   s.id = 'sticky-header-sentinel';
   s.setAttribute('aria-hidden', 'true');
-  // Zero-height marker; inserted right before the turn-indicator so it
-  // marks the indicator's natural (un-pinned) top position.
-  turnIndicator.parentNode!.insertBefore(s, turnIndicator);
+  // Zero-height marker inserted right before #opponent-hands (the player
+  // tiles row), which is the element that actually docks when collapsed.
+  // It marks the tiles' natural (un-pinned) top, so the collapse fires at
+  // the exact scroll position where the tiles reach their pinned spot —
+  // no gap where the bar/tiles haven't caught up to the docked layout.
+  opponentHandsDiv.parentNode!.insertBefore(s, opponentHandsDiv);
   stickyHeaderSentinel = s;
   return s;
 }
@@ -2633,8 +2639,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ── In-lobby (game div hidden) ─────────────────────────
     if (gameDiv.style.display === 'none') {
-      // R toggles ready (only when the button is visible to us).
-      if (k === 'r' && readyButton && readyButton.style.display !== 'none' && !readyButton.disabled) {
+      // Enter or R readies up (Enter reads as "start the game" — the
+      // game begins once everyone is ready). Only when the ready button
+      // is actually available to us. Enter while focus is still in the
+      // name/lobby-id input is handled separately (it submits the join);
+      // by the time we're in the lobby those inputs are disabled, so
+      // isTypingInTextField() is false and this fires as expected.
+      if ((e.key === 'Enter' || k === 'r') &&
+          readyButton && readyButton.style.display !== 'none' && !readyButton.disabled) {
         e.preventDefault();
         readyButton.click();
         return;
