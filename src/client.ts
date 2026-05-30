@@ -995,6 +995,12 @@ function connect(): void {
         store.set('unoPlayerId', myId);
         isSpectating = message.spectator || false;
         clientLog('[start] myId =', myId, 'players =', (message.players || []).map(p => ({ id: p.id, name: p.name })), 'turn =', message.turn);
+        // Was the game UI hidden before this message? Only a real
+        // lobby→game transition should reset the scroll position; a
+        // re-broadcast `start` (reconnect, late echo, spectator swap)
+        // arriving while the user is already mid-game must NOT yank
+        // their scroll back to the top.
+        const enteringGameFromLobby = gameDiv.style.display === 'none';
         lobbyDiv.style.display = 'none';
         gameDiv.style.display = 'block';
         document.getElementById('about-clear-btn')!.style.display = 'none';
@@ -1019,8 +1025,20 @@ function connect(): void {
         // viewport pinned to the bottom of the new layout, hiding the
         // turn indicator and discard pile until the user manually scrolls
         // up. Reset to the top once layout settles so the game always
-        // opens at the natural starting position.
-        requestAnimationFrame(() => window.scrollTo(0, 0));
+        // opens at the natural starting position — but ONLY on the real
+        // lobby→game transition, never on a re-broadcast start that lands
+        // while the user is already playing (that would yank their scroll).
+        if (enteringGameFromLobby) {
+          requestAnimationFrame(() => {
+            window.scrollTo(0, 0);
+            // We just reset to the top, so the header is in its expanded
+            // (un-pinned) state. The watcher will re-collapse on scroll.
+            document.body.classList.remove('header-collapsed');
+          });
+        }
+        // Start watching scroll so the sticky header collapses into the
+        // compact docked bar once the user scrolls down into their hand.
+        ensureStickyHeaderWatcher();
         break;
 
       case 'update':
@@ -1207,9 +1225,28 @@ function updateReadyButton(): void {
   readyButton.textContent = text;
 }
 
+function getTurnLabelEl(): HTMLSpanElement {
+  let el = document.getElementById('turn-label') as HTMLSpanElement | null;
+  if (!el) {
+    el = document.createElement('span');
+    el.id = 'turn-label';
+    // Prepend so the label sits before the timer badge.
+    turnText.insertBefore(el, turnText.firstChild);
+  }
+  return el;
+}
+// Set the turn label text WITHOUT clobbering the inline #turn-timer span
+// (a direct `turnText.textContent = …` would delete the timer child and
+// force a recreate every turn). Keeping them as separate spans also lets
+// the collapsed sticky-header CSS hide just the label and keep the timer.
+function setTurnLabelText(text: string): void {
+  const el = getTurnLabelEl();
+  if (el.textContent !== text) el.textContent = text;
+}
+
 function updateTurnIndicator(): void {
   if (currentTurn === -1 || !players.length) {
-    turnText.textContent = '等待游戏开始...';
+    setTurnLabelText('等待游戏开始...');
     turnIndicator.classList.remove('my-turn');
     document.body.classList.add('player-action-disabled');
     stopTurnCountdown();
@@ -1223,11 +1260,11 @@ function updateTurnIndicator(): void {
   clientLog('[turn] myId =', myId, 'currentPlayer.id =', currentPlayer ? currentPlayer.id : null, 'isMyTurn =', isMyTurn);
 
   if (isMyTurn) {
-    turnText.textContent = 'YOU';
+    setTurnLabelText('YOU');
     turnIndicator.classList.add('my-turn');
     document.body.classList.remove('player-action-disabled');
   } else {
-    turnText.textContent = `${currentPlayer ? currentPlayer.name : '-'}的回合`;
+    setTurnLabelText(`${currentPlayer ? currentPlayer.name : '-'}的回合`);
     turnIndicator.classList.remove('my-turn');
     document.body.classList.add('player-action-disabled');
   }
@@ -1313,6 +1350,127 @@ function updateGameStatusPills(): void {
   } else {
     chainEl.classList.add('hidden');
   }
+}
+
+// When the page is scrolled far enough that the turn-indicator and the
+// player-tiles row (#opponent-hands) have both pinned to the top of the
+// viewport, collapse them into a compact docked header:
+//   - the turn-indicator shrinks to a thin full-viewport-width colored
+//     bar (green on our turn, red/orange otherwise — a loading-bar look)
+//   - the player-tiles row docks flush beneath that bar and shares a
+//     single unified background so the two read as one piece.
+// We drive this purely with a body-level class toggled on scroll; the
+// CSS in style.css does the visual collapsing.
+const TURN_INDICATOR_STICKY_TOP = 8; // keep in sync with #turn-indicator { top }
+
+// The collapsed header is full-viewport-width. Using `100vw` would
+// include the vertical scrollbar gutter and produce a phantom
+// horizontal scrollbar; instead we publish the true content width
+// (documentElement.clientWidth) as a CSS var and the full-bleed rules
+// size against it.
+function setViewportWidthVar(): void {
+  const w = document.documentElement.clientWidth;
+  document.documentElement.style.setProperty('--vw100', `${w}px`);
+}
+
+// We decide collapse/expand from a zero-height SENTINEL placed in normal
+// flow just above the sticky turn-indicator — NOT from the indicator's
+// own geometry. That distinction matters: collapsing the header changes
+// the indicator's height and the document height, which (if we measured
+// the indicator itself) could bump the scroll position back across the
+// threshold and cause an infinite collapse/expand flicker right at the
+// trigger point. The sentinel sits ABOVE everything sticky, so its
+// position is unaffected by the collapse and there's exactly one stable
+// crossing point.
+let stickyHeaderSentinel: HTMLDivElement | null = null;
+
+function ensureStickyHeaderSentinel(): HTMLDivElement {
+  if (stickyHeaderSentinel && stickyHeaderSentinel.isConnected) return stickyHeaderSentinel;
+  const s = document.createElement('div');
+  s.id = 'sticky-header-sentinel';
+  s.setAttribute('aria-hidden', 'true');
+  // Zero-height marker; inserted right before the turn-indicator so it
+  // marks the indicator's natural (un-pinned) top position.
+  turnIndicator.parentNode!.insertBefore(s, turnIndicator);
+  stickyHeaderSentinel = s;
+  return s;
+}
+
+let stickyHeaderScrollBound = false;
+let stickyHeaderRafPending = false;
+
+// Hysteresis band (px): collapse once the sentinel is at/above the
+// sticky anchor, but only expand again after it has dropped a clear
+// margin below it. Two separated thresholds mean there is no single
+// point where a 1px jitter (or a sub-pixel reflow) can flip the state
+// back and forth — killing the flicker at the trigger point.
+const STICKY_COLLAPSE_AT = TURN_INDICATOR_STICKY_TOP;       // collapse when top <= 8
+const STICKY_EXPAND_AT = TURN_INDICATOR_STICKY_TOP + 28;    // expand when top >= 36
+
+function evalStickyHeaderCollapse(): void {
+  stickyHeaderRafPending = false;
+  if (gameDiv.style.display === 'none') {
+    document.body.classList.remove('header-collapsed');
+    restoreTimerToHeader();
+    return;
+  }
+  const sentinel = ensureStickyHeaderSentinel();
+  // The sentinel sits ABOVE every sticky element, so its viewport top is
+  // a pure function of scroll position — it does NOT move when the header
+  // collapses (the collapse is purely visual and preserves in-flow
+  // height; see the CSS). That, plus the hysteresis band below, keeps the
+  // toggle perfectly stable with no flicker.
+  const top = sentinel.getBoundingClientRect().top;
+  const collapsed = document.body.classList.contains('header-collapsed');
+  if (!collapsed && top <= STICKY_COLLAPSE_AT) {
+    document.body.classList.add('header-collapsed');
+    relocateTimerToBody();
+  } else if (collapsed && top >= STICKY_EXPAND_AT) {
+    document.body.classList.remove('header-collapsed');
+    restoreTimerToHeader();
+  }
+}
+
+// The countdown badge normally lives inline inside #turn-text, which is
+// inside #turn-indicator. When collapsed, the indicator forms its own
+// stacking context (z-index:50) and the tiles card (z-index:51) paints
+// over the indicator's lower region — which would bury the fixed badge
+// no matter how high its own z-index is (z-index only ranks within the
+// same stacking context). To dock the badge into the tiles area in
+// front of everything, we lift it OUT to document.body while collapsed,
+// then put it back inline when expanded.
+function relocateTimerToBody(): void {
+  const el = document.getElementById('turn-timer');
+  if (el && el.parentElement !== document.body) {
+    document.body.appendChild(el);
+  }
+}
+function restoreTimerToHeader(): void {
+  const el = document.getElementById('turn-timer');
+  if (el && el.parentElement !== turnText) {
+    turnText.appendChild(el);
+  }
+}
+
+function scheduleStickyHeaderCollapse(): void {
+  if (stickyHeaderRafPending) return;
+  stickyHeaderRafPending = true;
+  requestAnimationFrame(evalStickyHeaderCollapse);
+}
+
+function ensureStickyHeaderWatcher(): void {
+  setViewportWidthVar();
+  ensureStickyHeaderSentinel();
+  // Evaluate once now in case we're already scrolled.
+  scheduleStickyHeaderCollapse();
+  if (stickyHeaderScrollBound) return;
+  stickyHeaderScrollBound = true;
+  // Passive scroll listener, coalesced to one rAF per frame.
+  window.addEventListener('scroll', scheduleStickyHeaderCollapse, { passive: true });
+  window.addEventListener('resize', () => {
+    setViewportWidthVar();
+    scheduleStickyHeaderCollapse();
+  }, { passive: true });
 }
 
 // Dev panel state info pane — populated only when the dev panel is
@@ -1423,6 +1581,9 @@ function resetGameState(): void {
   // Reset to lobby
   lobbyDiv.style.display = 'block';
   gameDiv.style.display = 'none';
+  // Drop the collapsed-header state so the lobby never inherits the
+  // docked-bar styling.
+  document.body.classList.remove('header-collapsed');
 
   requestAnimationFrame(() => {
 
@@ -1451,7 +1612,7 @@ function resetGameState(): void {
     playersList.innerHTML = '';
 
     // Reset turn indicator
-    turnText.textContent = 'Waiting for game to start...';
+    setTurnLabelText('Waiting for game to start...');
     turnIndicator.classList.remove('my-turn');
   });
 }
