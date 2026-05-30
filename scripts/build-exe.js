@@ -30,10 +30,7 @@ export async function ensureBinDir() {
 
 export async function build(runtime, platform, arch) {
   const target = `node12-${platform}-${arch}`;
-  const outfile = path.join(
-    BIN_DIR,
-    `${platform}/uno-server` + ["", ".exe"][+(platform == "win")],
-  );
+  const outfile = path.join(BIN_DIR, `${platform}/uno-server` + ["", ".exe"][+(platform == "win")]);
   console.log("building for", target);
   await $`pnpm dlx pkg . --targets ${target} --output ${outfile} --public`;
   if (platform == "win") {
