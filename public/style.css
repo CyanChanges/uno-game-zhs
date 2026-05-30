@@ -12,6 +12,7 @@
 }
 
 html {
+    overscroll-behavior: none;
     background: linear-gradient(135deg, #121212 0%, #2d2d2d 100%);
     min-height: 100%;
     /* Disable scroll anchoring on the scroll container. The collapsing
